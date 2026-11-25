@@ -113,5 +113,52 @@
     container.appendChild(lg);
   }
 
-  HS.plots = { elevation, dayChart };
+  /* SNR vs distance (VHF/UHF). lines: [{name,color,values:[{x,v}]}], marks: [{x,label,color}], horizon {x,label} */
+  function distChart(container, lines, threshold, marks, horizon, unit) {
+    container.innerHTML = '';
+    const W = 640, H = 240, L = 40, Rm = 12, Tm = 12, B = 28;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Signal-to-noise ratio by distance' }, container);
+    const xs = lines[0].values.map(p => p.x), xMax = xs[xs.length - 1];
+    const vals = lines.flatMap(l => l.values.map(p => p.v)).filter(isFinite);
+    let lo = Math.max(-40, Math.min(-20, Math.floor((Math.min(...vals) - 5) / 10) * 10)), hi = Math.min(90, Math.max(30, Math.ceil((Math.max(...vals) + 5) / 10) * 10));
+    const x = v => L + (W - L - Rm) * v / xMax, y = v => Tm + (H - Tm - B) * (1 - (Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo));
+    for (let v = lo; v <= hi; v += 10) {
+      el('line', { x1: L, x2: W - Rm, y1: y(v), y2: y(v), class: 'grid' }, svg);
+      txt(svg, L - 6, y(v) + 4, (v > 0 ? '+' : '') + v, 'end');
+    }
+    const step = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500].find(s => xMax / s <= 8) || 1000;
+    for (let v = 0; v <= xMax + 1e-9; v += step) txt(svg, x(v), H - 10, v + (v === 0 ? '' : ''), 'middle');
+    txt(svg, W - Rm, H - 10 - 12, unit, 'end', { 'font-size': 10 });
+    txt(svg, L + 4, Tm + 10, 'SNR (dB)', 'start', { 'font-size': 10 });
+    el('line', { x1: L, x2: W - Rm, y1: y(threshold.snr), y2: y(threshold.snr), stroke: 'var(--ink-2)', 'stroke-dasharray': '6 4', 'stroke-width': 1.25 }, svg);
+    txt(svg, W - Rm - 2, y(threshold.snr) - 5, `${threshold.label} needs ${threshold.snr > 0 ? '+' : ''}${threshold.snr} dB`, 'end');
+    if (horizon && horizon.x < xMax) {
+      el('line', { x1: x(horizon.x), x2: x(horizon.x), y1: Tm, y2: H - B, stroke: 'var(--ink-3)', 'stroke-dasharray': '2 3' }, svg);
+      txt(svg, x(horizon.x) + 4, Tm + 24, horizon.label, 'start', { 'font-size': 10 });
+    }
+    lines.forEach(l => {
+      let d = ''; l.values.forEach((p, i) => { d += (i ? 'L' : 'M') + x(p.x).toFixed(1) + ' ' + y(p.v).toFixed(1); });
+      el('path', { d, fill: 'none', stroke: l.color, 'stroke-width': 2.25, 'stroke-dasharray': l.dash ? '6 4' : 'none', 'stroke-linejoin': 'round' }, svg);
+    });
+    marks.forEach(m => {
+      el('line', { x1: x(m.x), x2: x(m.x), y1: Tm, y2: H - B, stroke: m.color, 'stroke-width': 1.5 }, svg);
+      m.points.forEach(v => el('circle', { cx: x(m.x), cy: y(v), r: 4, fill: m.color, stroke: 'var(--panel)', 'stroke-width': 2 }, svg));
+      txt(svg, x(m.x) - 4, Tm + 10, m.label, 'end', { 'font-size': 10 });
+    });
+    const cross = el('line', { y1: Tm, y2: H - B, stroke: 'var(--ink-3)', 'stroke-width': 1, visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: L, y: Tm, width: W - L - Rm, height: H - Tm - B, fill: 'transparent' }, svg);
+    hit.addEventListener('mousemove', e => {
+      const b = svg.getBoundingClientRect();
+      const xv = ((e.clientX - b.left) * W / b.width - L) / (W - L - Rm) * xMax;
+      const i = Math.max(0, Math.min(xs.length - 1, Math.round(xv / xMax * (xs.length - 1))));
+      cross.setAttribute('x1', x(xs[i])); cross.setAttribute('x2', x(xs[i])); cross.setAttribute('visibility', 'visible');
+      showTip(e, `<b>${xs[i].toFixed(xs[i] < 10 ? 1 : 0)} ${unit}</b><br>` + lines.map(l => `<span style="color:${l.color}">●</span> ${l.name}: ${(l.values[i].v > 0 ? '+' : '') + l.values[i].v.toFixed(0)} dB`).join('<br>'));
+    });
+    hit.addEventListener('mouseleave', () => { cross.setAttribute('visibility', 'hidden'); hideTip(); });
+    const lg = document.createElement('div'); lg.className = 'chart-legend';
+    lg.innerHTML = lines.map(l => `<span><i style="background:${l.color}"></i>${l.name}</span>`).join('');
+    container.appendChild(lg);
+  }
+
+  HS.plots = { elevation, dayChart, distChart };
 })(typeof window !== 'undefined' ? window : globalThis);

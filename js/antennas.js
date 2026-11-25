@@ -31,7 +31,7 @@
     dipole: {
       name: 'Half-wave dipole / inverted-V',
       hint: 'Center-fed λ/2 wire. Lower the ends for an inverted-V.',
-      params: ['height', 'endHeight', 'dir', 'cutFor'],
+      params: ['height', 'endHeight', 'dir', 'cutFor'], groups: ['hf', 'vu'],
       match: 'choke', trim: true, pol: 'h',
       build(p, fd, s) {
         return { wires: arms(lamOf(fd) * 0.245 * s, p.height * FT, p.endHeight * FT, p.dir, WIRE), feed: { wire: 0, at: 0 } };
@@ -137,7 +137,7 @@
     gp: {
       name: 'Elevated ground-plane vertical',
       hint: 'λ/4 radiator up on a mast with tuned radials sloping down from its base.',
-      params: ['height', 'gpRadials', 'cutFor'],
+      params: ['height', 'gpRadials', 'cutFor'], groups: ['hf', 'vu'],
       heightLabels: { height: 'Base height' },
       match: 'choke', trim: true, pol: 'v',
       build(p, fd, s) {
@@ -155,17 +155,18 @@
     yagi: {
       name: 'Yagi beam',
       hint: 'Driven element plus a reflector and directors on a boom, aimed with a rotator.',
-      params: ['height', 'dir', 'elements'],
+      params: ['height', 'dir', 'elements', 'pol'], groups: ['hf', 'vu'],
       dirLabel: 'Beam heading',
       match: 'hairpin', trim: true, pol: 'h', monoband: true,
-      build(p, fd, s) {
-        const lam = lamOf(fd), h = p.height * FT, n = p.elements || 3;
-        const Lres = resonantElement(fd, h);
+      build(p, fd, s, ctx) {
+        const lam = lamOf(fd), h = p.height * FT, n = p.elements || 3, vert = p.pol === 'v';
+        const rad = Math.min(TUBE, lam / 400);
+        const Lres = resonantElement(fd, h, ctx && ctx.ground, rad);
         // spacing (λ) from the previous element and length factor relative to a resonant element
         const plan = [[0, 1.05], [0.16, s]];
         const dSp = [0.15, 0.2, 0.22], dLen = [0.955, 0.945, 0.935];
         for (let i = 0; i < n - 2; i++) plan.push([dSp[i], dLen[i]]);
-        const u = unit(p.dir), v = [u[1], -u[0], 0];
+        const u = unit(p.dir), v = vert ? [0, 0, 1] : [u[1], -u[0], 0];
         let x = 0; const pos = plan.map(([sp]) => (x += sp * lam));
         const mid = (pos[0] + pos[pos.length - 1]) / 2;
         const wires = []; let feed;
@@ -174,16 +175,77 @@
           const c = [u[0] * b, u[1] * b, h];
           if (i === 1) {
             feed = { wire: wires.length, at: 0 };
-            wires.push({ p1: c, p2: add(c, v, half), radius: TUBE });
-            wires.push({ p1: c, p2: add(c, v, -half), radius: TUBE });
+            wires.push({ p1: c, p2: add(c, v, half), radius: rad });
+            wires.push({ p1: c, p2: add(c, v, -half), radius: rad });
           } else {
-            wires.push({ p1: add(c, v, -half), p2: add(c, v, half), radius: TUBE, segs: 2 * Math.ceil(half / (lam / 40)) });
+            wires.push({ p1: add(c, v, -half), p2: add(c, v, half), radius: rad, segs: 2 * Math.ceil(half / (lam / 40)) });
           }
         });
         return { wires, feed };
       }
+    },
+    jpole: {
+      name: 'J-pole',
+      hint: 'End-fed λ/2 vertical with a λ/4 matching stub, usually copper pipe or ladder line.',
+      params: ['height', 'cutFor'], groups: ['vu'],
+      heightLabels: { height: 'Bottom height' },
+      match: 'ideal', trim: false, pol: 'v', maxSegFrac: 1 / 60,
+      build(p, fd) {
+        const lam = lamOf(fd), hb = p.height * FT, sp = lam * 0.025, r = lam / 700;
+        const Ll = lam * 0.75 * 0.96, Ls = lam * 0.25 * 0.96, tap = lam * 0.04;
+        const A = [0, 0, hb], At = [0, 0, hb + tap], B = [sp, 0, hb], Bt = [sp, 0, hb + tap];
+        return {
+          wires: [
+            { p1: A, p2: At, radius: r }, { p1: At, p2: [0, 0, hb + Ll], radius: r },
+            { p1: B, p2: Bt, radius: r }, { p1: Bt, p2: [sp, 0, hb + Ls], radius: r },
+            { p1: A, p2: B, radius: r, segs: 2 }, { p1: At, p2: Bt, radius: r, segs: 2 }
+          ], feed: { wire: 5, at: 0.5 }
+        };
+      }
+    },
+    collinear: {
+      name: 'Collinear vertical (X50 / X200 style)',
+      hint: 'Half-wave sections stacked and fed in phase. More sections squeeze the pattern toward the horizon.',
+      params: ['height', 'sections', 'cutFor'], groups: ['vu'],
+      heightLabels: { height: 'Base height' },
+      match: 'ideal', trim: false, pol: 'v',
+      build(p, fd) {
+        const lam = lamOf(fd), hb = p.height * FT, n = p.sections || 2, half = lam * 0.235, r = lam / 500;
+        const wires = [], feeds = [];
+        for (let i = 0; i < n; i++) {
+          const c = hb + half + i * 0.75 * lam;
+          feeds.push({ wire: wires.length, at: 1 });
+          wires.push({ p1: [0, 0, c - half], p2: [0, 0, c], radius: r });
+          wires.push({ p1: [0, 0, c], p2: [0, 0, c + half], radius: r });
+        }
+        return { wires, feed: feeds[0], feeds };
+      }
+    },
+    mobile: {
+      name: 'Mobile whip (car roof)',
+      hint: 'Quarter-wave whip on a mag mount, with the car roof as its ground plane.',
+      params: ['cutFor'], groups: ['vu'],
+      match: 'none', trim: true, pol: 'v',
+      build(p, fd, s) {
+        const lam = lamOf(fd), hb = 1.5, L = lam * 0.245 * s, rl = Math.min(0.6, lam * 0.25);
+        const w = [{ p1: [0, 0, hb], p2: [0, 0, hb + L], radius: 0.001 }];
+        for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 + Math.PI / 4; w.push({ p1: [0, 0, hb], p2: [Math.sin(a) * rl, Math.cos(a) * rl, hb], radius: 0.01 }); }
+        return { wires: w, feed: { wire: 0, at: 0 } };
+      }
+    },
+    duck: {
+      name: 'Handheld rubber duck',
+      hint: 'The stock helical antenna on a handheld radio. Short and lossy, and your hand and body soak up more.',
+      params: ['height'], groups: ['vu'],
+      heightLabels: { height: 'Held at' },
+      match: 'none', trim: true, pol: 'v', extraLoss: { '2m': 7, '70cm': 4 },
+      build(p, fd, s) {
+        const lam = lamOf(fd), h = p.height * FT, L = lam * 0.245 * s, cp = Math.min(lam * 0.1, h - 0.3);
+        return { wires: [{ p1: [0, 0, h - cp], p2: [0, 0, h], radius: 0.02 }, { p1: [0, 0, h], p2: [0, 0, h + L], radius: 0.002 }], feed: { wire: 1, at: 0 } };
+      }
     }
   };
+  Object.values(TYPES).forEach(T => { T.groups = T.groups || ['hf']; });
 
   function fanModel(p, s40, s20) {
     const L40 = trimmedLen('dipole', p, 7.15) * s40, L20 = trimmedLen('dipole', p, 14.175) * s20;
@@ -204,10 +266,10 @@
   const cache = new Map();
   const memo = (key, fn) => { if (!cache.has(key)) cache.set(key, fn()); return cache.get(key); };
 
-  function resonantElement(fd, h) {
-    return memo('el|' + fd + '|' + h.toFixed(2), () => {
+  function resonantElement(fd, h, ground, rad) {
+    return memo('el|' + fd + '|' + h.toFixed(2) + '|' + !!ground + '|' + rad, () => {
       const lam = lamOf(fd);
-      const s = trimScale(sc => ({ wires: [{ p1: [-lam * 0.24 * sc, 0, h], p2: [lam * 0.24 * sc, 0, h], radius: TUBE, segs: 22 }], feed: { wire: 0, at: 0.5 } }), fd, { er: 13, sigma: 0.005 });
+      const s = trimScale(sc => ({ wires: [{ p1: [-lam * 0.24 * sc, 0, h], p2: [lam * 0.24 * sc, 0, h], radius: rad, segs: 22 }], feed: { wire: 0, at: 0.5 } }), fd, ground === undefined ? { er: 13, sigma: 0.005 } : ground);
       return lam * 0.48 * s;
     });
   }
@@ -218,7 +280,8 @@
     let s0 = start, s1 = start * 0.97, x0 = X(s0), x1 = X(s1);
     for (let i = 0; i < 8 && Math.abs(x1) > 1; i++) {
       const s2 = s1 - x1 * (s1 - s0) / (x1 - x0);
-      s0 = s1; x0 = x1; s1 = Math.min(Math.max(s2, 0.8), 1.2); x1 = X(s1);
+      if (!isFinite(s2) || Math.abs(s2 - s1) < 1e-5) break;
+      s0 = s1; x0 = x1; s1 = Math.min(Math.max(s2, 0.7), 1.3); x1 = X(s1);
     }
     return s1;
   }
@@ -243,7 +306,8 @@
   }
 
   function effCut(p, opBand) {
-    return (p.cutFor && p.cutFor !== 'auto') ? p.cutFor : opBand;
+    const B = HS.data.BANDS, c = p.cutFor;
+    return (c && c !== 'auto' && B[c] && B[c].group === B[opBand].group) ? c : opBand;
   }
 
   function trimmedLen(type, p, fd) {
@@ -252,12 +316,14 @@
     return lamOf(fd) * 0.245 * sc;
   }
 
+  const groundOf = soil => soil === 'free' ? null : (HS.data.GROUNDS[soil] || HS.data.GROUNDS.average);
+
   function scaleFor(type, p, fd, soil) {
     const T = TYPES[type];
     if (!T.trim) return 1;
-    const g = HS.data.GROUNDS[soil] || HS.data.GROUNDS.average;
+    const g = groundOf(soil);
     const key = 'trim|' + type + '|' + fd + '|' + soil + '|' + JSON.stringify(geomParams(T, p));
-    const bld = s => ({ ...T.build(p, fd, s, { soil }), loadOhms: 0 });
+    const bld = s => ({ ...T.build(p, fd, s, { soil, ground: g }), loadOhms: 0, maxSegFrac: T.maxSegFrac });
     return memo(key, () => T.highZ ? trimHighZ(bld, fd, g) : trimScale(bld, fd, g));
   }
 
@@ -267,17 +333,19 @@
 
   /* Build + solve + sample the pattern for a station's antenna on a band.
    * Returns {sol, pat, model, info} (cached by inputs). */
-  function analyze(ant, bandId, soil) {
+  function analyze(ant, bandId, soilIn) {
     const band = HS.data.BANDS[bandId];
     const T = TYPES[ant.type];
+    // at VHF/UHF the antenna is solved in free space: the line-of-sight model adds the ground itself
+    const soil = band.group === 'vu' ? 'free' : soilIn;
     const cutId = T.multiband ? bandId : (T.monoband ? bandId : effCut(ant, bandId));
     const fd = HS.data.BANDS[cutId].f;
     const key = 'an|' + ant.type + '|' + bandId + '|' + cutId + '|' + soil + '|' + JSON.stringify(geomParams(T, ant));
     return memo(key, () => {
       const s = scaleFor(ant.type, ant, fd, soil);
-      const model = T.build(ant, fd, s, { soil });
-      const g = HS.data.GROUNDS[soil] || HS.data.GROUNDS.average;
-      const sol = HS.nec.solve({ ...model, freqMHz: band.f, ground: g });
+      const g = groundOf(soil);
+      const model = T.build(ant, fd, s, { soil, ground: g });
+      const sol = HS.nec.solve({ ...model, freqMHz: band.f, ground: g, maxSegFrac: T.maxSegFrac });
       const pat = HS.nec.pattern(sol, 5, 2);
       // radiation efficiency for noise scaling: radiated / input, from pattern integral
       let prad = 0, wsum = 0;
@@ -285,8 +353,9 @@
         const w = Math.cos(e * Math.PI / 180);
         pat.az.forEach((a, i) => { prad += Math.pow(10, pat.g[j * pat.az.length + i] / 10) * w; wsum += w; });
       });
-      const avgGain = prad / wsum / 2; // upper hemisphere only
-      return { sol, pat, model, cutBand: cutId, scale: s, avgGainDb: 10 * Math.log10(Math.max(avgGain, 1e-6)) };
+      const avgGain = g ? prad / wsum / 2 : prad / wsum; // over ground: upper hemisphere only
+      const extraLoss = (T.extraLoss && T.extraLoss[bandId]) || 0;
+      return { sol, pat, model, cutBand: cutId, scale: s, extraLoss, freeSpace: !g, avgGainDb: 10 * Math.log10(Math.max(avgGain, 1e-6)) };
     });
   }
 

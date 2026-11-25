@@ -98,6 +98,7 @@ button, select, input { font: inherit; color: inherit; }
 .stab[aria-selected="true"] { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
 .stab .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .stab.add { border-style: dashed; color: var(--ink-2); }
+.tabs-note { flex-basis: 100%; }
 
 .station-form { padding: 12px; display: grid; gap: 14px; }
 .fgroup { display: grid; gap: 8px; }
@@ -126,6 +127,7 @@ button, select, input { font: inherit; color: inherit; }
 .b-coax { background: var(--ink-3); }
 .b-mis { background: var(--poor); }
 .b-dev { background: var(--fair); }
+.b-ant { background: var(--s5); }
 .budget-key { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--ink-2); }
 .budget-key i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; margin: 0; }

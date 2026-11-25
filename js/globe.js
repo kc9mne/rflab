@@ -17,7 +17,7 @@
     const scene = new T.Scene();
     const camera = new T.PerspectiveCamera(40, 1, 0.01, 50);
     const controls = new T.OrbitControls(camera, renderer.domElement);
-    controls.minDistance = 1.25; controls.maxDistance = 6; controls.enablePan = false; controls.rotateSpeed = 0.5;
+    controls.minDistance = 1.01; controls.maxDistance = 6; controls.enablePan = false; controls.rotateSpeed = 0.5;
     controls.addEventListener('change', render);
 
     const earth = new T.Mesh(new T.SphereGeometry(1, 96, 64), new T.MeshLambertMaterial({ color: 0x1b3550 }));
@@ -30,6 +30,11 @@
     (HS.LAND || []).forEach(line => {
       const pts = line.map(([lon, lat]) => xyz(lat, lon, 1.001));
       scene.add(new T.Line(new T.BufferGeometry().setFromPoints(pts), landMat));
+    });
+    const stateMat = new T.LineBasicMaterial({ color: 0x7d97ad, transparent: true, opacity: 0.45 });
+    (HS.STATES || []).forEach(line => {
+      const pts = line.map(([lon, lat]) => xyz(lat, lon, 1.0008));
+      scene.add(new T.Line(new T.BufferGeometry().setFromPoints(pts), stateMat));
     });
     // Maidenhead fields: 20° of longitude by 10° of latitude
     const gridMat = new T.LineBasicMaterial({ color: 0x5d7a94, transparent: true, opacity: 0.18 });
@@ -64,8 +69,9 @@
       const dec = 23.44 * Math.sin(2 * Math.PI * (doy - 81) / 365);
       sun.position.copy(xyz(dec, 180 - d.cond.hour * 15, 10));
 
+      const ms = Math.max(0.01, Math.min(1, d.span / 4000));
       const mark = (loc, color, big) => {
-        const m = new T.Mesh(new T.SphereGeometry(big ? 0.014 : 0.011, 16, 12), new T.MeshBasicMaterial({ color }));
+        const m = new T.Mesh(new T.SphereGeometry((big ? 0.014 : 0.011) * ms, 16, 12), new T.MeshBasicMaterial({ color }));
         m.position.copy(xyz(loc.lat, loc.lon, 1.003)); dyn.add(m);
       };
       mark(d.home.loc, d.home.color, true);
@@ -75,6 +81,15 @@
         mark(L.st.loc, L.color);
         label(xyz(L.st.loc.lat, L.st.loc.lon, 1.01), `<b>${L.st.name}</b> ${L.text}`, L.color);
         if (!L.link.ok) return;
+        if (L.link.vu) {
+          // line of sight: a ground-level path, solid inside the radio horizon
+          const pts = [];
+          for (let k = 0; k <= 60; k++) { const p = HS.prop.gcPoint(d.home.loc, L.st.loc, k / 60); pts.push(xyz(p.lat, p.lon, 1.0012)); }
+          const w = (L.selected ? 0.0016 : 0.001) * Math.max(0.03, Math.min(1, d.span / 4000));
+          dyn.add(new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(pts), 60, w, 6, false),
+            new T.MeshBasicMaterial({ color: new T.Color(L.color), transparent: true, opacity: 0.25 + 0.75 * L.rel })));
+          return;
+        }
         const n = L.link.hops, h = L.link.h / 6371 * EXAG;
         const pts = [];
         const N = 40 * n;
@@ -98,14 +113,26 @@
         }
       });
 
-      const key = d.home.grid + '|' + d.links.length;
+      if (d.horizonKm) {
+        // radio horizon around home (to a typical 30 ft antenna)
+        const pts = [], R = d.horizonKm / 6371, lat0 = d.home.loc.lat * D2R, lon0 = d.home.loc.lon * D2R;
+        for (let k = 0; k <= 120; k++) {
+          const b = k / 120 * 2 * Math.PI;
+          const lat = Math.asin(Math.sin(lat0) * Math.cos(R) + Math.cos(lat0) * Math.sin(R) * Math.cos(b));
+          const lon = lon0 + Math.atan2(Math.sin(b) * Math.sin(R) * Math.cos(lat0), Math.cos(R) - Math.sin(lat0) * Math.sin(lat));
+          pts.push(xyz(lat / D2R, lon / D2R, 1.0011));
+        }
+        const ring = new T.Line(new T.BufferGeometry().setFromPoints(pts), new T.LineDashedMaterial({ color: new T.Color(d.home.color), dashSize: R * 0.05, gapSize: R * 0.04, transparent: true, opacity: 0.8 }));
+        ring.computeLineDistances(); dyn.add(ring);
+      }
+      const key = d.home.grid + '|' + d.links.map(L => L.st.grid).join(',');
       if (key !== homeKey) {
         // frame home plus all stations
         let far = 0;
         d.links.forEach(L => { far = Math.max(far, HS.prop.distBearing(d.home.loc, L.st.loc).km); });
         const mid = d.links.length ? HS.prop.gcPoint(d.home.loc, d.links.reduce((a, L) => HS.prop.distBearing(d.home.loc, L.st.loc).km > HS.prop.distBearing(d.home.loc, a.st.loc).km ? L : a).st.loc, 0.35) : d.home.loc;
-        const dist = Math.min(4.2, 1.6 + far / 4000);
-        camera.position.copy(xyz(mid.lat - 8, mid.lon, dist));
+        const dist = far < 600 ? 1 + Math.max(far, 40) / 6371 * 3.2 : Math.min(4.2, 1.6 + far / 4000);
+        camera.position.copy(xyz(mid.lat - (far < 600 ? 0.2 * far / 111 : 8), mid.lon, dist));
         controls.update(); homeKey = key;
       }
       render();

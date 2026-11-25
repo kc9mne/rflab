@@ -186,20 +186,22 @@
     const n = basis.length;
     const Ns = segs.length;
 
-    // feed node: nearest node on feed wire to fractional position
-    const fw = model.wires[model.feed.wire];
-    const fp = fw.p1.map((v, i) => v + (fw.p2[i] - v) * model.feed.at);
-    const fsegs = mesh.wireSegs[model.feed.wire];
-    let feedNode = -1, best = Infinity;
-    fsegs.forEach(si => {
-      [segs[si].nA, segs[si].nB].forEach(ni => {
-        const d = norm(sub(nodes[ni].p, fp));
-        if (d < best) { best = d; feedNode = ni; }
+    // feed points: nearest node on each feed wire to its fractional position
+    const feedSpecs = model.feeds || [model.feed];
+    const gaps = feedSpecs.map(fd => {
+      const fw = model.wires[fd.wire];
+      const fp = fw.p1.map((v, i) => v + (fw.p2[i] - v) * fd.at);
+      const fsegs = mesh.wireSegs[fd.wire];
+      let feedNode = -1, best = Infinity;
+      fsegs.forEach(si => {
+        [segs[si].nA, segs[si].nB].forEach(ni => {
+          const d = norm(sub(nodes[ni].p, fp));
+          if (d < best) { best = d; feedNode = ni; }
+        });
       });
+      const gapSeg = fsegs.find(si => segs[si].nA === feedNode) ?? fsegs.find(si => segs[si].nB === feedNode);
+      return { gapSeg, gapEnd: segs[gapSeg].nA === feedNode ? 0 : 1 };
     });
-    // gap segment: a feed-wire segment touching the node
-    let gapSeg = fsegs.find(si => segs[si].nA === feedNode) ?? fsegs.find(si => segs[si].nB === feedNode);
-    const gapEnd = segs[gapSeg].nA === feedNode ? 0 : 1;
 
     // pair integral cache
     const cache = new Map();
@@ -254,18 +256,18 @@
       }
     }
 
-    // excitation: 1 V delta gap at feed node on gap segment, oriented along its t
+    // excitation: 1 V delta gap at each feed node on its gap segment, oriented along its t
     const br = new Float64Array(n), bi = new Float64Array(n);
-    const feedTerms = [];
-    basis.forEach((b, m) => {
+    const feedTerms = gaps.map(() => []);
+    gaps.forEach((g, gi) => basis.forEach((b, m) => {
       b.halves.forEach(h => {
-        if (h.seg === gapSeg && h.end === gapEnd) { br[m] += h.sg; feedTerms.push([m, h.sg]); }
+        if (h.seg === g.gapSeg && h.end === g.gapEnd) { br[m] += h.sg; feedTerms[gi].push([m, h.sg]); }
       });
-    });
+    }));
     const Arc = Ar.slice(), Aic = Ai.slice();
     const { xr, xi } = csolve(n, Arc, Aic, br.slice(), bi.slice());
-    let Ir = 0, Ii = 0;
-    feedTerms.forEach(([m, sg]) => { Ir += sg * xr[m]; Ii += sg * xi[m]; });
+    const feedI = feedTerms.map(ft => { let r = 0, i = 0; ft.forEach(([m, sg]) => { r += sg * xr[m]; i += sg * xi[m]; }); return [r, i]; });
+    let [Ir, Ii] = feedI[0];
     const d = Ir * Ir + Ii * Ii;
     let Zr = Ir / d, Zi = -Ii / d;
     const load = model.loadOhms || 0;
@@ -289,7 +291,8 @@
       s.br = t[2] * sc[0] - t[3] * sc[1]; s.bi = t[2] * sc[1] + t[3] * sc[0];
     });
     const Ifr = Ir * sc[0] - Ii * sc[1], Ifi = Ir * sc[1] + Ii * sc[0];
-    const Pin = 0.5 * (Ztot[0]) * (Ifr * Ifr + Ifi * Ifi);
+    // input power: one feed (with any series loss), or the sum over in-phase 1 V feeds
+    const Pin = feedI.length > 1 ? 0.5 * feedI.reduce((a, c) => a + c[0], 0) : 0.5 * (Ztot[0]) * (Ifr * Ifr + Ifi * Ifi);
 
     return {
       z: { r: Ztot[0], x: Ztot[1] }, zAntenna: { r: Zr, x: Zi }, loadOhms: load,
@@ -365,25 +368,31 @@
     const az = [], el = [];
     for (let a = 0; a < 360; a += azStep) az.push(a);
     for (let e = elMin; e <= 90; e += elStep) el.push(e);
-    const g = new Float32Array(az.length * el.length);
+    const g = new Float32Array(az.length * el.length), fv = new Float32Array(az.length * el.length);
     let max = -99, maxAz = 0, maxEl = 0;
     el.forEach((e, j) => az.forEach((a, i) => {
-      const v = (e === 0 && sol.ground) ? gainAt(sol, a, 0.3).total : gainAt(sol, a, e).total;
+      const r = (e === 0 && sol.ground) ? gainAt(sol, a, 0.3) : gainAt(sol, a, e);
+      const v = r.total;
       g[j * az.length + i] = v;
+      fv[j * az.length + i] = Math.pow(10, r.v / 10) / Math.max(1e-12, Math.pow(10, r.v / 10) + Math.pow(10, r.h / 10));
       if (v > max) { max = v; maxAz = a; maxEl = e; }
     }));
-    return { az, el, g, azStep, elStep, elMin, max, maxAz, maxEl };
+    return { az, el, g, fv, azStep, elStep, elMin, max, maxAz, maxEl };
   }
 
-  function lookup(pat, azDeg, elDeg) {
+  // fraction of radiated power that is vertically polarised in a direction
+  function vertFrac(pat, azDeg, elDeg) { return lookup(pat, azDeg, elDeg, pat.fv); }
+
+  function lookup(pat, azDeg, elDeg, arr) {
     let a = ((azDeg % 360) + 360) % 360;
     const fi = a / pat.azStep, i0 = Math.floor(fi) % pat.az.length, i1 = (i0 + 1) % pat.az.length, tx = fi - Math.floor(fi);
     const fj = Math.min(Math.max((elDeg - pat.elMin) / pat.elStep, 0), pat.el.length - 1);
     const j0 = Math.floor(fj), j1 = Math.min(j0 + 1, pat.el.length - 1), ty = fj - j0;
     const N = pat.az.length;
-    const v = (j, i) => pat.g[j * N + i];
+    const src = arr || pat.g;
+    const v = (j, i) => src[j * N + i];
     return (v(j0, i0) * (1 - tx) + v(j0, i1) * tx) * (1 - ty) + (v(j1, i0) * (1 - tx) + v(j1, i1) * tx) * ty;
   }
 
-  HS.nec = { solve, gainAt, pattern, lookup, fresnel, C0 };
+  HS.nec = { solve, gainAt, pattern, lookup, vertFrac, fresnel, C0 };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SkyHop</title>
-<meta name="description" content="Build ham radio stations, see their antenna patterns in 3D and predict HF coverage to other stations.">
+<title>RFLab</title>
+<meta name="description" content="Build ham radio stations, see their antenna patterns in 3D and predict HF and VHF/UHF coverage to other stations.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -14,20 +14,22 @@
 <header class="topbar">
   <div class="brand">
     <span class="brand-mark" aria-hidden="true"></span>
-    <span class="brand-name">SkyHop</span>
+    <span class="brand-name">RFLab</span>
     <span class="brand-sub">station &amp; propagation simulator</span>
   </div>
   <div class="conditions" role="group" aria-label="Band and conditions">
     <div class="seg" id="bandSeg" role="radiogroup" aria-label="Band"></div>
-    <label class="cond">
+    <label class="cond hf-only">
       <span class="cond-label">UTC</span>
       <input type="range" id="hour" min="0" max="23" step="1" value="17" aria-label="Hour (UTC)">
       <output id="hourOut" class="mono">17:00Z</output>
     </label>
-    <label class="cond"><span class="cond-label">Month</span>
+    <label class="cond hf-only"><span class="cond-label">Month</span>
       <select id="month"></select></label>
-    <label class="cond"><span class="cond-label">Sun</span>
+    <label class="cond hf-only"><span class="cond-label">Sun</span>
       <select id="solar"></select></label>
+    <label class="cond vu-only" hidden><span class="cond-label">Terrain</span>
+      <select id="terrain"></select></label>
     <label class="cond"><span class="cond-label">Mode</span>
       <select id="mode"></select></label>
   </div>
@@ -72,14 +74,14 @@
         <div id="elevPlot" class="plot"></div>
       </section>
       <section class="panel">
-        <h3>Signal-to-noise through the day</h3>
+        <h3 id="dayTitle">Signal-to-noise through the day</h3>
         <p class="panel-sub" id="dayChartSub"></p>
         <div id="dayChart" class="plot"></div>
       </section>
     </div>
 
     <footer class="notes">
-      <p><strong>How it works.</strong> Each antenna is solved as real wires over real ground with a method-of-moments solver (the same idea as NEC), trimmed to resonance the way you would trim it in the yard. Feedline loss comes from datasheet curves, including the extra loss SWR causes. Propagation is a simplified sky-wave model: F2-layer hops, MUF from the sun's position and solar activity, D-layer absorption, and man-made noise at each end. Use it to compare setups. Conditions on the day will vary.</p>
+      <p><strong>How it works.</strong> Each antenna is solved as real wires over real ground with a method-of-moments solver (the same idea as NEC), trimmed to resonance the way you would trim it in the yard. Feedline loss comes from datasheet curves, including the extra loss SWR causes. On HF, propagation is a simplified sky-wave model: F2-layer hops, MUF from the sun's position and solar activity, D-layer absorption, and man-made noise at each end. On 2 m and 70 cm it is line of sight over a smooth earth: two-ray ground reflection inside the radio horizon, ITU-R P.526 diffraction and a troposcatter estimate beyond it, plus terrain, trees and buildings, and polarization mismatch. Use it to compare setups. Conditions on the day will vary.</p>
       <p id="caveats"></p>
     </footer>
   </section>
@@ -90,6 +92,7 @@
 <script src="js/vendor/three.min.js"></script>
 <script src="js/vendor/OrbitControls.js"></script>
 <script src="js/land.js"></script>
+<script src="js/states.js"></script>
 <script src="js/nec.js"></script>
 <script src="js/data.js"></script>
 <script src="js/antennas.js"></script>

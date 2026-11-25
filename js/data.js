@@ -6,9 +6,11 @@
   const HS = root.HS = root.HS || {};
 
   const BANDS = {
-    '40m': { id: '40m', label: '40 m', f: 7.15, enabled: true },
-    '20m': { id: '20m', label: '20 m', f: 14.175, enabled: true },
-    // next phase: '80m', '2m', '70cm', '33cm' (Meshtastic 915 MHz)
+    '40m':  { id: '40m',  label: '40 m',  f: 7.15,   group: 'hf' },
+    '20m':  { id: '20m',  label: '20 m',  f: 14.175, group: 'hf' },
+    '2m':   { id: '2m',   label: '2 m',   f: 146,    group: 'vu' },
+    '70cm': { id: '70cm', label: '70 cm', f: 440,    group: 'vu' }
+    // next: '80m', '33cm' (Meshtastic 915 MHz)
   };
 
   const GROUNDS = {
@@ -45,7 +47,8 @@
     '4to1':  { name: '4:1 balun',                ratio: 4,  loss: 0.25 },
     '9to1':  { name: '9:1 unun',                 ratio: 9,  loss: 1.0 },
     '49to1': { name: '49:1 unun (EFHW)',         ratio: 49, loss: 0.8 },
-    hairpin: { name: 'Hairpin / beta match',     ideal: true, loss: 0.1 }
+    hairpin: { name: 'Hairpin / beta match',     ideal: true, loss: 0.1 },
+    ideal:   { name: 'Built-in match (as designed)', ideal: true, loss: 0.1 }
   };
 
   // power out (W) per band; atu = max SWR the built-in tuner handles (0 = none); nf = receiver noise figure (dB)
@@ -75,8 +78,19 @@
   const MODES = {
     ft8: { label: 'FT8', snr: -20 },
     cw:  { label: 'CW',  snr: -3 },
-    ssb: { label: 'SSB', snr: 10 }
+    ssb: { label: 'SSB', snr: 10 },
+    fm:  { label: 'FM',  snr: 12 }   // ~12 dB SINAD in a 16 kHz channel, referred to 2500 Hz
   };
+
+  // VHF/UHF: how much the ground between stations departs from smooth earth
+  const TERRAIN = {
+    flat:     { label: 'Flat (prairie, farmland)', loss: 0,  sigma: 6 },
+    rolling:  { label: 'Rolling hills',            loss: 6,  sigma: 8 },
+    hilly:    { label: 'Hilly',                    loss: 12, sigma: 10 },
+    mountain: { label: 'Mountainous',              loss: 20, sigma: 12 }
+  };
+  // typical height of trees and buildings around the antenna, from the local-noise setting (m)
+  const CLUTTER = { quiet: 3, rural: 4, residential: 10, city: 18 };
 
   const SOLAR = {
     low:  { label: 'Solar minimum (SSN 10)', ssn: 10 },
@@ -89,5 +103,5 @@
     return (c.k1 * Math.sqrt(fMHz) + c.k2 * fMHz) * ft / 100;
   }
 
-  HS.data = { BANDS, GROUNDS, COAX, MATCH, RADIOS, NOISE, MODES, SOLAR, coaxLoss };
+  HS.data = { BANDS, GROUNDS, COAX, MATCH, RADIOS, NOISE, MODES, SOLAR, TERRAIN, CLUTTER, coaxLoss };
 })(typeof window !== 'undefined' ? window : globalThis);

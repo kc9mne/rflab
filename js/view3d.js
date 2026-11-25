@@ -26,6 +26,7 @@
     const controls = new T.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = false;
     controls.maxPolarAngle = Math.PI * 0.495;
+    let freeMode = false;
     controls.addEventListener('change', render);
     scene.add(new T.HemisphereLight(0xcfe3ff, 0x2a3a2a, 0.9));
     const sun = new T.DirectionalLight(0xffffff, 0.6); sun.position.set(40, 80, 30); scene.add(sun);
@@ -68,11 +69,26 @@
       }));
       cx /= n; cy /= n; cz /= n;
       wires.forEach(w => [w.p1, w.p2].forEach(p => { maxE = Math.max(maxE, Math.hypot(p[0] - cx, p[1] - cy), p[2]); }));
-      const R = Math.max(10, maxE * 1.15);
-      const origin = [cx, cy, Math.max(cz, 0.5)];
+      const free = !!d.freeSpace;
+      let minZ = Infinity; wires.forEach(w => { minZ = Math.min(minZ, w.p1[2], w.p2[2]); });
+      if (free) { maxE = 0; wires.forEach(w => [w.p1, w.p2].forEach(p => { maxE = Math.max(maxE, Math.hypot(p[0] - cx, p[1] - cy, p[2] - cz)); })); }
+      const R = free ? Math.max(0.6, maxE * 1.6) : Math.max(10, maxE * 1.15);
+      const origin = [cx, cy, free ? cz : Math.max(cz, 0.5)];
 
+      if (free) {
+        // VHF/UHF: the antenna in free space, with a horizon plane through it for reference
+        const hR = R * 1.5;
+        const hz = new T.PolarGridHelper(hR, 12, 4, 64, 0x35536b, 0x22384a);
+        hz.position.set(origin[0], origin[2], -origin[1]); dyn.add(hz);
+        [['N', 0], ['E', 90], ['S', 180], ['W', 270]].forEach(([t, a]) => {
+          const r = hR * 1.06, ar = a * Math.PI / 180;
+          addLabel(toV([origin[0] + Math.sin(ar) * r, origin[1] + Math.cos(ar) * r, origin[2]]), t, null, 'compass');
+        });
+        addLabel(toV([origin[0], origin[1] - hR * 0.72, origin[2]]), 'horizon', null, 'compass');
+      }
       // ground
       const gR = R * 1.7;
+      if (!free) {
       const ground = new T.Mesh(new T.CircleGeometry(gR, 64), new T.MeshLambertMaterial({ color: 0x1a2b22 }));
       ground.rotation.x = -Math.PI / 2; dyn.add(ground);
       const polar = new T.PolarGridHelper(gR, 12, 6, 64, 0x2e4a3c, 0x2e4a3c);
@@ -81,9 +97,10 @@
         const r = gR * 1.04, ar = a * Math.PI / 180;
         addLabel(toV([Math.sin(ar) * r, Math.cos(ar) * r, 0]), t, null, 'compass');
       });
+      }
 
       // wires
-      const wR = Math.max(0.04, R * 0.004);
+      const wR = free ? R * 0.006 : Math.max(0.04, R * 0.004);
       const copper = new T.MeshStandardMaterial({ color: 0xd98a3d, metalness: 0.6, roughness: 0.35 });
       const tubeR = w => (w.radius > 0.005 ? wR * 1.8 : wR);
       wires.forEach(w => dyn.add(cyl(w.p1, w.p2, tubeR(w), copper)));
@@ -96,16 +113,26 @@
       // supports: masts, poles, trees
       const poleMat = new T.MeshLambertMaterial({ color: 0x7a6a58 });
       const tops = [];
-      if (d.type === 'yagi' || d.type === 'gp') {
-        const top = d.type === 'yagi' ? wires[0].p1[2] : fw.p1[2];
-        tops.push([0, 0, top]);
+
+      if (free) {
+        if (d.type === 'mobile') {
+          const roof = new T.Mesh(new T.BoxGeometry(R * 0.9, 0.04, R * 1.1), new T.MeshStandardMaterial({ color: 0x55606b, metalness: 0.6, roughness: 0.4 }));
+          roof.position.set(0, minZ - 0.03, 0); dyn.add(roof);
+        } else if (d.type !== 'duck') {
+          const top = d.type === 'yagi' ? (wires[0].p1[2] + wires[0].p2[2]) / 2 : minZ;
+          dyn.add(cyl([0, 0, top], [0, 0, Math.max(0, top - R * 1.3)], wR * 2.5, poleMat));
+        }
+      }
+      if (d.type === 'yagi' || (d.type === 'gp' && !free)) {
+        const top = d.type === 'yagi' ? (wires[0].p1[2] + wires[0].p2[2]) / 2 : fw.p1[2];
+        if (!free) tops.push([0, 0, top]);
         if (d.type === 'yagi') {
-          const ends = wires.filter((w, i) => i !== d.model.feed.wire + 1).map(w => [(w.p1[0] + w.p2[0]) / 2, (w.p1[1] + w.p2[1]) / 2, w.p1[2]]);
+          const ends = wires.filter((w, i) => i !== d.model.feed.wire + 1).map(w => [(w.p1[0] + w.p2[0]) / 2, (w.p1[1] + w.p2[1]) / 2, (w.p1[2] + w.p2[2]) / 2]);
           let a = ends[0], b = ends[0], best = -1;
           ends.forEach(p => ends.forEach(q => { const dd = Math.hypot(p[0] - q[0], p[1] - q[1]); if (dd > best) { best = dd; a = p; b = q; } }));
           dyn.add(cyl(a, b, wR * 2.2, new T.MeshStandardMaterial({ color: 0xb8c2cc, metalness: 0.7, roughness: 0.3 })));
         }
-      } else {
+      } else if (!free) {
         const pts = [];
         wires.forEach(w => [w.p1, w.p2].forEach(p => { if (p[2] > 1.5 && !pts.some(q => Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]) < 0.05)) pts.push(p); }));
         pts.forEach(p => {
@@ -143,12 +170,14 @@
           const hit = new T.Mesh(new T.SphereGeometry(wR * (r.selected ? 6 : 4.5), 16, 12), new T.MeshBasicMaterial({ color: col }));
           hit.position.copy(toV(origin.map((v, i) => v + dir[i] * rr))); dyn.add(hit);
         }
-        addLabel(toV(tip), `<b>${r.label}</b> ${r.el.toFixed(0)}° · ${r.gain >= 0 ? '+' : ''}${r.gain.toFixed(1)} dBi`, r.color);
+        addLabel(toV(tip), `<b>${r.label}</b> ${(Math.round(r.el) || 0)}° · ${r.gain >= 0 ? '+' : ''}${r.gain.toFixed(1)} dBi`, r.color);
       });
 
-      if (Math.abs(R - lastR) > 0.5) {
-        camera.position.set(R * 2.3, R * 1.5, R * 2.7);
-        controls.target.set(origin[0], R * 0.35, -origin[1]);
+      controls.maxPolarAngle = free ? Math.PI : Math.PI * 0.495;
+      if (Math.abs(R - lastR) > 0.05 * Math.max(R, lastR) || free !== freeMode) {
+        freeMode = free;
+        if (free) { camera.position.set(origin[0] + R * 2.2, origin[2] + R * 1.2, -origin[1] + R * 2.6); controls.target.set(origin[0], origin[2], -origin[1]); }
+        else { camera.position.set(R * 2.3, R * 1.5, R * 2.7); controls.target.set(origin[0], R * 0.35, -origin[1]); }
         camera.near = R * 0.01; camera.far = R * 40; camera.updateProjectionMatrix();
         scene.fog.near = R * 4; scene.fog.far = R * 12;
         controls.update(); lastR = R;

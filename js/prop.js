@@ -122,21 +122,25 @@
   function gammaMag(r, x, z0) { return cabs(r - z0, x) / cabs(r + z0, x); }
   const swrOf = g => g >= 0.999 ? 999 : (1 + g) / (1 - g);
 
+  // a station keeps one antenna system per band group: st.hf and st.vu = {antenna, coax, coaxFt, match, power}
   function chain(st, bandId) {
     const D = HS.data, band = D.BANDS[bandId];
+    const sys = st[band.group] || st;
     const radio = D.RADIOS[st.radio];
     const maxW = radio.power[bandId];
-    const watts = maxW ? Math.min(st.power || maxW, maxW) : 0;
-    const ana = HS.antennas.analyze(st.antenna, bandId, st.ground);
+    const watts = maxW ? Math.min(sys.power || maxW, maxW) : 0;
+    const ana = HS.antennas.analyze(sys.antenna, bandId, st.ground);
+    const wz = []; ana.model.wires.forEach(w => wz.push(w.p1[2], w.p2[2]));
+    const hAnt = Math.max(0.5, wz.reduce((a, b) => a + b, 0) / wz.length);
     const z = ana.sol.z;
-    const M = D.MATCH[st.match] || D.MATCH.none;
-    const coax = D.COAX[st.coax];
+    const M = D.MATCH[sys.match] || D.MATCH.none;
+    const coax = D.COAX[sys.coax];
     const z0 = coax.z0;
     let rl = z.r, xl = z.x;
     if (M.ideal) { rl = z0; xl = 0; } else { rl /= M.ratio; xl /= M.ratio; }
     const swrAnt50 = swrOf(gammaMag(rl, xl, 50));
     const rho = gammaMag(rl, xl, z0);
-    const ml = D.coaxLoss(st.coax, band.f, st.coaxFt);
+    const ml = D.coaxLoss(sys.coax, band.f, sys.coaxFt);
     const a = Math.pow(10, ml / 10);
     const lineLoss = 10 * Math.log10((a * a - rho * rho) / (a * (1 - rho * rho)));
     const rhoIn = rho / a;
@@ -144,15 +148,17 @@
     let tuner = 'none', tunerLoss = 0, warn = [];
     if (coax.balanced) { tuner = 'external balanced tuner'; tunerLoss = 0.5 + Math.min(1.5, 0.05 * Math.max(0, swrRadio - 3)); }
     else if (swrRadio <= 1.5) tuner = 'none';
-    else if (radio.atu && swrRadio <= radio.atu) { tuner = 'built-in tuner'; tunerLoss = 0.2; }
+    else if (radio.atu && band.group === 'hf' && swrRadio <= radio.atu) { tuner = 'built-in tuner'; tunerLoss = 0.2; }
     else if (swrRadio <= 2) { tuner = 'none (radio may fold back power)'; }
     else {
       tuner = 'external tuner needed'; tunerLoss = Math.min(3, 0.5 + 0.15 * (swrRadio - 3));
-      warn.push(`SWR at the radio is ${swrRadio.toFixed(1)}:1, beyond the ${radio.atu ? 'built-in tuner (' + radio.atu + ':1)' : 'radio (no built-in tuner)'}. Assuming an external tuner.`);
+      warn.push(`SWR at the radio is ${swrRadio.toFixed(1)}:1, beyond the ${radio.atu && band.group === 'hf' ? 'built-in tuner (' + radio.atu + ':1)' : 'radio (no built-in tuner on this band)'}. Assuming an external tuner.`);
     }
     if (swrLine > 10 && !coax.balanced) warn.push(`SWR on the coax is ${swrLine > 99 ? '99+' : swrLine.toFixed(0)}:1. Ladder line or a matching device at the antenna would cut the loss.`);
     if (!maxW) warn.push(`${radio.name} does not cover ${band.label}.`);
-    const totalLoss = lineLoss + M.loss + tunerLoss;
+    const antLoss = ana.extraLoss || 0;
+    if (antLoss) warn.push(`A rubber duck throws away about ${antLoss} dB on ${band.label} compared with a full-size antenna.`);
+    const totalLoss = lineLoss + M.loss + tunerLoss + antLoss;
     const ptxDbm = watts ? 10 * Math.log10(watts * 1000) : -Infinity;
     // noise at the receiver input (2500 Hz)
     const N = D.NOISE[st.noise];
@@ -162,22 +168,88 @@
     const nInt = -174 + 34 + radio.nf;
     const nTot = 10 * Math.log10(Math.pow(10, nExt / 10) + Math.pow(10, nInt / 10));
     return {
-      band, radio, watts, ana, z, zAntenna: ana.sol.zAntenna, match: M, coax, swrAnt50, swrLine, swrRadio,
+      band, radio, watts, ana, z, hAnt, antLoss, sys, zAntenna: ana.sol.zAntenna, match: M, coax, swrAnt50, swrLine, swrRadio,
       matchedLoss: ml, lineLoss, mismatchLoss: lineLoss - ml, tuner, tunerLoss, totalLoss,
       ptxDbm, perpDbm: ptxDbm - totalLoss, nExt, nInt, noiseDbm: nTot, warn
     };
   }
 
-  function sMeter(dbm) {
-    const s = (dbm + 127) / 6; // S1 = -121, S9 = -73 (HF)
+  // IARU S-meter: S9 = -73 dBm below 30 MHz, -93 dBm above; 6 dB per S-unit
+  function sMeter(dbm, vu) {
+    const s9 = vu ? -93 : -73, s = (dbm - s9) / 6 + 9;
     if (s < 1) return 'below S1';
     if (s <= 9) return 'S' + Math.floor(s);
-    return 'S9+' + Math.round(dbm + 73);
+    return 'S9+' + Math.round(dbm - s9);
+  }
+
+  /* ---------- VHF/UHF line of sight ----------
+   * Smooth earth with a 4/3 effective radius: plane-earth (two-ray) loss inside the radio horizon,
+   * ITU-R P.526 spherical-earth diffraction beyond it, a rough tropospheric-scatter floor for long paths,
+   * plus terrain roughness, local clutter (trees, buildings) and polarisation mismatch. */
+  const AE = 8495; // km
+  function p526(dKm, fMHz, h1, h2) {
+    const X = 2.188 * Math.cbrt(fMHz) * Math.pow(AE, -2 / 3) * dKm;
+    const Yk = 9.575e-3 * Math.pow(fMHz, 2 / 3) * Math.pow(AE, -1 / 3);
+    const F = X >= 1.6 ? 11 + 10 * Math.log10(X) - 17.6 * X : -20 * Math.log10(X) - 5.6488 * Math.pow(X, 1.425);
+    const G = h => { const B = Yk * h; const g = B > 2 ? 17.6 * Math.sqrt(B - 1.1) - 5 * Math.log10(B - 1.1) - 8 : 20 * Math.log10(B + 0.1 * B * B * B); return Math.max(g, -38); };
+    return -(F + G(h1) + G(h2)); // dB below free space
+  }
+  function losCore(dKm, fMHz, h1, h2, cond) {
+    const D = HS.data;
+    const dk = Math.max(dKm, 0.05), dm = dk * 1000;
+    const fspl = 32.45 + 20 * Math.log10(fMHz) + 20 * Math.log10(dk);
+    const dLos = Math.sqrt(2 * AE * h1 / 1000) + Math.sqrt(2 * AE * h2 / 1000);
+    const aPe = Math.max(0, 40 * Math.log10(dm) - 20 * Math.log10(h1 * h2) - fspl);
+    const aDf = Math.max(0, p526(dk, fMHz, h1, h2));
+    let a;
+    if (dk <= 0.8 * dLos) a = aPe;
+    else if (dk >= 1.2 * dLos) a = aDf;
+    else { const t = (dk - 0.8 * dLos) / (0.4 * dLos); a = aPe * (1 - t) + aDf * t; }
+    const lDiff = fspl + a;
+    // troposcatter floor: starts no stronger than the ground-reflection loss at the horizon (low antennas scatter poorly)
+    const fsplH = 32.45 + 20 * Math.log10(fMHz) + 20 * Math.log10(dLos);
+    const aH = Math.max(0, 40 * Math.log10(dLos * 1000) - 20 * Math.log10(h1 * h2) - fsplH);
+    const lSc = dk > dLos ? fspl + Math.max(40, aH + 6) + 0.08 * (dk - dLos) + 10 * Math.log10(fMHz / 144) : Infinity;
+    const lBase = -10 * Math.log10(Math.pow(10, -lDiff / 10) + Math.pow(10, -lSc / 10));
+    const T = D.TERRAIN[cond.terrain] || D.TERRAIN.flat;
+    const terrain = T.loss * (1 - Math.exp(-dk / 30));
+    return { fspl, dLos, a, lDiff, lSc, lBase, terrain, sigma: T.sigma, scatter: lSc < lDiff };
+  }
+  function clutterLoss(st, c) {
+    const hc = HS.data.CLUTTER[st.noise] ?? 6;
+    if (c.hAnt >= hc) return 0;
+    return Math.min(20, 4 + (hc - c.hAnt)) * (c.band.f > 300 ? 1.2 : 1);
+  }
+  // signal for a VHF/UHF path at distance dKm (lets the chart sweep distance with the same stations)
+  function losBudget(tx, rx, txC, rxC, dKm, brg, back, cond) {
+    const FT = 0.3048;
+    const e1 = (tx.elevFt ?? 650) * FT, e2 = (rx.elevFt ?? 650) * FT, base = Math.min(e1, e2);
+    const h1 = txC.hAnt + e1 - base, h2 = rxC.hAnt + e2 - base;
+    const L = losCore(dKm, txC.band.f, h1, h2, cond);
+    const dm = Math.max(dKm, 0.05) * 1000, aeM = AE * 1000;
+    const elT = Math.max(-5, (Math.atan((h2 - h1) / dm) - dm / (2 * aeM)) * 180 / Math.PI);
+    const elR = Math.max(-5, (Math.atan((h1 - h2) / dm) - dm / (2 * aeM)) * 180 / Math.PI);
+    const gt = HS.nec.lookup(txC.ana.pat, brg, elT), gr = HS.nec.lookup(rxC.ana.pat, back, elR);
+    const vt = HS.nec.vertFrac(txC.ana.pat, brg, elT), vr = HS.nec.vertFrac(rxC.ana.pat, back, elR);
+    const polLoss = -10 * Math.log10(Math.max(0.01, vt * vr + (1 - vt) * (1 - vr)));
+    const clutter = clutterLoss(tx, txC) + clutterLoss(rx, rxC);
+    const loss = L.lBase + L.terrain + clutter + polLoss;
+    const sig = txC.perpDbm + gt - loss + gr - rxC.totalLoss;
+    return { ...L, h1, h2, el: elT, gt, gr, polLoss, clutter, loss, sig, snr: sig - rxC.noiseDbm, los: dKm <= L.dLos };
   }
 
   /* one direction: tx station -> rx station */
   function link(tx, rx, ctx, cond, txC, rxC) {
     const f = txC.band.f;
+    if (txC.band.group === 'vu') {
+      const db = distBearing(tx.loc, rx.loc), back = distBearing(rx.loc, tx.loc).brg;
+      if (!txC.watts) return { km: db.km, brg: db.brg, back, ok: false, reason: 'Radio cannot transmit on this band', rel: {} };
+      if (!rxC.radio.power[txC.band.id]) return { km: db.km, brg: db.brg, back, ok: false, reason: 'Their radio is not on this band', rel: {} };
+      const b = losBudget(tx, rx, txC, rxC, db.km, db.brg, back, cond);
+      const rel = {};
+      Object.entries(HS.data.MODES).forEach(([k, md]) => { rel[k] = normCdf((b.snr - md.snr) / b.sigma); });
+      return { km: db.km, brg: db.brg, back, ok: true, vu: true, hops: 0, h: 0, ...b, s: sMeter(b.sig, true), rel };
+    }
     const { db, modes } = skyModes(tx.loc, rx.loc, f, cond);
     const back = distBearing(rx.loc, tx.loc).brg;
     let best = null;
@@ -197,5 +269,5 @@
     return { km: db.km, brg: db.brg, back, ok: true, ...best, s: sMeter(best.sig), rel };
   }
 
-  HS.prop = { gridToLatLon, latLonToGrid, distBearing, gcPoint, skyModes, chain, link, sMeter, layer, swrOf };
+  HS.prop = { gridToLatLon, latLonToGrid, distBearing, gcPoint, skyModes, chain, link, sMeter, layer, swrOf, losCore, losBudget, AE };
 })(typeof window !== 'undefined' ? window : globalThis);
