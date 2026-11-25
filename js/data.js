@@ -84,10 +84,11 @@
 
   // VHF/UHF: how much the ground between stations departs from smooth earth
   const TERRAIN = {
-    flat:     { label: 'Flat (prairie, farmland)', loss: 0,  sigma: 6 },
-    rolling:  { label: 'Rolling hills',            loss: 6,  sigma: 8 },
-    hilly:    { label: 'Hilly',                    loss: 12, sigma: 10 },
-    mountain: { label: 'Mountainous',              loss: 20, sigma: 12 }
+    real:     { label: 'Real elevation data',      loss: 0,  sigma: 6 },
+    flat:     { label: 'Smooth earth: flat', loss: 0,  sigma: 6 },
+    rolling:  { label: 'Smooth earth: rolling hills',            loss: 6,  sigma: 8 },
+    hilly:    { label: 'Smooth earth: hilly',                    loss: 12, sigma: 10 },
+    mountain: { label: 'Smooth earth: mountainous',              loss: 20, sigma: 12 }
   };
   // typical height of trees and buildings around the antenna, from the local-noise setting (m)
   const CLUTTER = { quiet: 3, rural: 4, residential: 10, city: 18 };

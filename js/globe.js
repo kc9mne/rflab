@@ -113,6 +113,25 @@
         }
       });
 
+      if (d.coverage) {
+        // two-way coverage: polar grid around home, each cell coloured by reliability class
+        const C = d.coverage, nr = C.radials, ns = C.steps;
+        const pos = [], col = [];
+        const P = (i, k) => { const p = HS.terrain.dest(C.center, (i % nr) * 360 / nr, C.R * k / ns); return xyz(p.lat, p.lon, 1.0007); };
+        const cls = v => v >= 0.8 ? C.colors.good : v >= 0.4 ? C.colors.fair : v >= 0.1 ? C.colors.poor : null;
+        for (let i = 0; i < nr; i++) for (let k = 0; k < ns; k++) {
+          const v = Math.min(C.rel[i * ns + k], C.rel[((i + 1) % nr) * ns + k]);
+          const c = cls(v); if (!c) continue;
+          const a = P(i, k), b = P(i + 1, k), e = P(i, k + 1), f = P(i + 1, k + 1);
+          [a, e, b, b, e, f].forEach(v3 => { pos.push(v3.x, v3.y, v3.z); col.push(c.r, c.g, c.b); });
+        }
+        if (pos.length) {
+          const g = new T.BufferGeometry();
+          g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+          g.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+          dyn.add(new T.Mesh(g, new T.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5, depthWrite: false, side: T.DoubleSide })));
+        }
+      }
       if (d.horizonKm) {
         // radio horizon around home (to a typical 30 ft antenna)
         const pts = [], R = d.horizonKm / 6371, lat0 = d.home.loc.lat * D2R, lon0 = d.home.loc.lon * D2R;

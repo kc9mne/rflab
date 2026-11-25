@@ -12,13 +12,13 @@
 
   const ant = (type, o = {}) => ({ type, height: 35, endHeight: 35, dir: 90, cutFor: 'auto', radials: 16, gpRadials: 4, elements: 3, sections: 2, pol: 'h', ...o });
   const sysOf = (antenna, coax, coaxFt, match, power) => ({ antenna, coax, coaxFt, match, power });
-  const stn = (id, name, grid, radio, noise, hf, vu, o = {}) => ({ id, name, grid, radio, ground: 'average', noise, elevFt: 650, hf, vu, ...o });
+  const stn = (id, name, grid, radio, noise, hf, vu, o = {}) => ({ id, name, grid, radio, ground: 'average', noise, elevFt: 650, elevAuto: true, hf, vu, ...o });
   const vuDefault = () => sysOf(ant('collinear', { height: 30, sections: 2 }), 'lmr400', 50, 'ideal', 50);
   const hfDefault = () => sysOf(ant('dipole', { height: 30, endHeight: 30 }), 'rg213', 50, 'choke', 100);
 
   function defaults() {
     return {
-      band: '40m', hour: 17, month: new Date().getMonth() + 1, solar: 'mid', mode: 'ssb', terrain: 'flat', sel: 'home', focus: { hf: 'r2', vu: 'v2' },
+      band: '40m', hour: 17, month: new Date().getMonth() + 1, solar: 'mid', mode: 'ssb', terrain: 'real', coverage: false, sel: 'home', focus: { hf: 'r2', vu: 'v2' },
       home: stn('home', 'My station', 'EN50', 'ft991a', 'residential',
         sysOf(ant('efhw', { height: 14, endHeight: 20, dir: 90 }), 'rg8x', 60, '49to1', 100),
         sysOf(ant('jpole', { height: 25 }), 'rg8x', 50, 'ideal', 50)),
@@ -31,7 +31,7 @@
         stn('v1', 'Handheld across town', 'EN50nm', 'uv5r', 'residential', hfDefault(), sysOf(ant('duck', { height: 5 }), 'rg58', 0, 'none', 4)),
         stn('v2', 'Mobile up the highway', 'EN50mt', 'ic2730a', 'rural', hfDefault(), sysOf(ant('mobile'), 'rg58', 15, 'none', 50)),
         stn('v3', 'Club station', 'EN50bk', 'ic9700', 'rural', hfDefault(), sysOf(ant('yagi', { height: 50, dir: 85, elements: 5, pol: 'h' }), 'lmr400', 100, 'hairpin', 100)),
-        stn('v4', 'Hilltop station', 'EM69aq', 'ts2000', 'rural', hfDefault(), sysOf(ant('collinear', { height: 60, sections: 3 }), 'ldf5', 90, 'ideal', 100), { elevFt: 1150 })
+        stn('v4', 'Tower station', 'EM69aq', 'ts2000', 'rural', hfDefault(), sysOf(ant('collinear', { height: 100, sections: 3 }), 'ldf5', 130, 'ideal', 100))
       ],
       pinA: null
     };
@@ -52,6 +52,38 @@
   const byId = id => [S.home, ...S.remotes].find(s => s.id === id);
   const locOf = st => P.gridToLatLon(st.grid) || { lat: 0, lon: 0 };
   const focusId = () => S.focus[grp()];
+  const FT = 0.3048;
+  const normCdf = z => { const t = 1 / (1 + 0.3275911 * Math.abs(z / Math.SQRT2)); const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-z * z / 2); return 0.5 * (1 + (z >= 0 ? y : -y)); };
+
+  /* ---------- terrain loading ---------- */
+  const TR = HS.terrain;
+  const realTerrain = () => grp() === 'vu' && S.terrain === 'real';
+  let terrainTimer = null;
+  function want(points) {
+    if (TR.ready(points)) return true;
+    TR.ensure(points).then(() => { clearTimeout(terrainTimer); terrainTimer = setTimeout(() => compute(true), 60); });
+    return false;
+  }
+  const profCache = new Map();
+  function profileFor(a, b) {
+    const k = a.grid + '>' + b.grid;
+    if (profCache.has(k)) return profCache.get(k);
+    const pts = TR.pathPoints(a.loc, b.loc, P.distBearing(a.loc, b.loc).km);
+    if (!want(pts)) return null;
+    const p = TR.profile(a.loc, b.loc);
+    if (p) profCache.set(k, p);
+    return p;
+  }
+  // ground profile from a point along a bearing, sampled n+1 times out to km
+  function profileAlong(a, brg, km, n) {
+    const pts = []; for (let i = 0; i <= n; i++) pts.push(TR.dest(a, brg, km * i / n));
+    if (!want(pts)) return null;
+    const h = pts.map(p => TR.elev(p.lat, p.lon));
+    if (h.some(v => v == null)) return null;
+    return { d: pts.map((p, i) => km * i / n), h, km };
+  }
+  const sub = (p, k) => ({ d: p.d.slice(0, k + 1), h: p.h.slice(0, k + 1), km: p.d[k] });
+  const terrainDown = () => { const t = TR.status(); return t.failures > 0 && t.successes === 0; };
 
   /* ---------- top bar ---------- */
   function initTop() {
@@ -63,6 +95,8 @@
     $('#hour').value = S.hour; $('#hourOut').textContent = String(S.hour).padStart(2, '0') + ':00Z';
     document.querySelectorAll('.hf-only').forEach(e => { e.hidden = grp() !== 'hf'; });
     document.querySelectorAll('.vu-only').forEach(e => { e.hidden = grp() !== 'vu'; });
+    $('#covBtn').hidden = !(typeof view !== 'undefined' && view === 'map' && grp() === 'vu');
+    $('#covBtn').setAttribute('aria-pressed', !!S.coverage); $('#covBtn').textContent = S.coverage ? 'Hide coverage' : 'Show coverage';
   }
   $('#bandSeg').addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b) return;
@@ -74,7 +108,7 @@
   $('#month').addEventListener('change', e => { S.month = +e.target.value; compute(); });
   $('#solar').addEventListener('change', e => { S.solar = e.target.value; compute(); });
   $('#mode').addEventListener('change', e => { S.mode = e.target.value; compute(true); });
-  $('#terrain').addEventListener('change', e => { S.terrain = e.target.value; compute(true); });
+  $('#terrain').addEventListener('change', e => { S.terrain = e.target.value; renderForm(); compute(true); });
 
   /* ---------- station tabs + form ---------- */
   function renderTabs() {
@@ -136,7 +170,8 @@
           <label class="field"><span>Grid square</span><input id="f-grid" value="${esc(st.grid)}" maxlength="6" spellcheck="false" aria-describedby="gridHelp"></label>
         </div>
         <p class="hint" id="gridHelp">${P.gridToLatLon(st.grid) ? (g === 'vu' ? 'Use 6 characters (like EN50nm) for local stations.' : '') : 'Enter a 4 or 6 character grid, like EN50 or EN50wb.'}</p>
-        ${g === 'vu' ? `<div class="frow"><label class="field"><span>Ground elevation (ft above sea level)</span><input id="f-elevFt" type="number" min="-200" max="14000" step="10" value="${st.elevFt ?? 650}"></label>
+        ${g === 'vu' ? `<div class="frow"><div class="field"><label for="f-elevFt">Ground elevation (ft above sea level)</label><input id="f-elevFt" type="number" min="-200" max="29000" step="10" value="${st.elevFt ?? 650}" ${S.terrain === 'real' && st.elevAuto !== false ? 'disabled' : ''}>
+          ${S.terrain === 'real' ? `<label class="check"><input type="checkbox" id="f-elevAuto" ${st.elevAuto !== false ? 'checked' : ''}> From elevation data</label>` : ''}</div>
           <label class="field"><span>Local noise</span><select id="f-noise">${Object.entries(D.NOISE).map(([k, n]) => opt(k, n.label, st.noise)).join('')}</select></label></div>
           <p class="hint">Local noise also sets how tall the trees and buildings around the antenna are.</p>` : ''}
       </div>
@@ -176,7 +211,7 @@
     const [kind, key] = t.id.split('-');
     const out = t.parentElement.querySelector('output');
     if (t.type === 'range' && out) out.textContent = key === 'dir' ? `${t.value}° ${compass(+t.value)}` : `${t.value} ${key === 'power' ? 'W' : 'ft'}`;
-    if (t.tagName === 'SELECT') return; // handled on change
+    if (t.tagName === 'SELECT' || t.type === 'checkbox') return; // handled on change
     if (kind === 'f') {
       if (key === 'name') { st.name = t.value || 'Station'; renderTabs(); }
       else if (key === 'grid') {
@@ -192,7 +227,9 @@
     compute(key === 'name');
   });
   form.addEventListener('change', e => {
-    const st = byId(S.sel), sys = st[grp()]; const t = e.target; if (t.tagName !== 'SELECT') return;
+    const st = byId(S.sel), sys = st[grp()]; const t = e.target;
+    if (t.id === 'f-elevAuto') { st.elevAuto = t.checked; renderForm(); compute(); return; }
+    if (t.tagName !== 'SELECT') return;
     const [kind, key] = t.id.split('-');
     if (kind === 'f') {
       st[key] = t.value;
@@ -230,9 +267,9 @@
   let view3d, globe, view = 'antenna', timer = null, last = null;
   function compute(fast) {
     clearTimeout(timer);
-    const run = () => { try { doCompute(); } finally { $('#busy').hidden = true; } };
+    const run = () => doCompute();
     if (fast) { timer = setTimeout(run, 0); return; }
-    $('#busy').hidden = false;
+    $('#busy').textContent = 'Solving antenna…'; $('#busy').hidden = false;
     timer = setTimeout(run, 30);
   }
 
@@ -242,23 +279,36 @@
     const cond = { hour: S.hour, month: S.month, ssn: D.SOLAR[S.solar].ssn, terrain: S.terrain };
     const all = stations();
     all.forEach(st => { st.loc = locOf(st); });
+    if (realTerrain()) all.forEach(st => {
+      if (st.elevAuto === false || !want([st.loc])) return;
+      const e = TR.elev(st.loc.lat, st.loc.lon);
+      if (e != null) {
+        st.elevFt = Math.round(e / FT);
+        const f = $('#f-elevFt'); if (f && st.id === S.sel && document.activeElement !== f) f.value = st.elevFt;
+      }
+    });
     const ch = {}; all.forEach(st => { ch[st.id] = P.chain(st, S.band); });
     if (!byId(focusId()) || !all.includes(byId(focusId()))) S.focus[grp()] = all[1] && all[1].id;
     const res = groupRemotes().map(r => {
-      const out = P.link(S.home, r, null, cond, ch.home, ch[r.id]);
-      const back = P.link(r, S.home, null, cond, ch[r.id], ch.home);
+      const prof = realTerrain() ? profileFor(S.home, r) : null;
+      const out = P.link(S.home, r, prof ? { prof } : null, cond, ch.home, ch[r.id]);
+      const back = P.link(r, S.home, prof ? { prof: P.reverseProfile(prof) } : null, cond, ch[r.id], ch.home);
       let day = null;
       if (!vu) { day = []; for (let h = 0; h < 24; h++) day.push(P.link(S.home, r, null, { ...cond, hour: h }, ch.home, ch[r.id]).snr); }
-      return { st: r, out, back, day, color: colorOf(r) };
+      return { st: r, out, back, day, prof, color: colorOf(r) };
     });
     let A_ = null;
     if (S.pinA && D.BANDS[S.pinA.band] && D.BANDS[S.pinA.band].group === grp()) {
       const st = { ...JSON.parse(JSON.stringify(S.pinA.home)), id: 'home', loc: S.home.loc };
       const cA = P.chain(st, S.band);
-      A_ = { st, chain: cA, res: res.map(r => ({ out: P.link(st, r.st, null, cond, cA, ch[r.st.id]), back: P.link(r.st, st, null, cond, ch[r.st.id], cA) })) };
+      A_ = { st, chain: cA, res: res.map(r => ({ out: P.link(st, r.st, r.prof ? { prof: r.prof } : null, cond, cA, ch[r.st.id]), back: P.link(r.st, st, r.prof ? { prof: P.reverseProfile(r.prof) } : null, cond, ch[r.st.id], cA) })) };
     }
     last = { cond, ch, res, A: A_, vu };
-    renderSystem(); renderCards(); renderViews(); renderPlots(); renderCaveats();
+    last.coverage = vu && S.coverage && view === 'map' ? coverage() : null;
+    renderSystem(); renderCards(); renderViews(); renderPlots(); renderProfile(); renderCaveats();
+    const ts = TR.status();
+    $('#busy').hidden = !(realTerrain() && ts.loading);
+    $('#busy').textContent = 'Loading elevation data…';
     $('#restoreA').hidden = $('#clearA').hidden = !S.pinA;
     $('#pinA').textContent = S.pinA ? 'Save my setup as A again' : 'Save my setup as A';
   }
@@ -312,7 +362,10 @@
   function pathText(o) {
     if (!o.ok) return '';
     if (o.vu) {
-      const parts = [o.los ? `Line of sight (radio horizon ${mi(o.dLos)} mi)` : `Past the radio horizon (${mi(o.dLos)} mi), by ${o.scatter ? 'troposcatter' : 'diffraction'}`];
+      const parts = o.terr
+        ? [o.terr.clear ? 'Clear line of sight over the terrain' : `Beyond line of sight, by ${o.scatter ? 'troposcatter' : 'diffraction'}`]
+        : [o.los ? `Line of sight (radio horizon ${mi(o.dLos)} mi)` : `Past the radio horizon (${mi(o.dLos)} mi), by ${o.scatter ? 'troposcatter' : 'diffraction'}`];
+      if (o.terr && o.terr.terrainLoss > 1) parts.push(`hills −${o.terr.terrainLoss.toFixed(0)} dB`);
       if (o.clutter > 0.5) parts.push(`trees and buildings −${o.clutter.toFixed(0)} dB`);
       if (o.polLoss > 3) parts.push(`polarization mismatch −${o.polLoss.toFixed(0)} dB`);
       return parts.join(' · ') + `<br>Your antenna ${sg(o.gt)} dBi toward them; theirs ${sg(o.gr)} dBi`;
@@ -351,8 +404,14 @@
     if (globe) {
       const span = Math.max(1, ...last.res.map(r => r.out.km));
       const hc = last.ch.home;
+      const cv = last.coverage;
+      const col = n => new THREE.Color(css.getPropertyValue(n).trim());
+      $('#covLegend').hidden = !(cv && view === 'map');
+      if (cv) $('#covLegend').innerHTML = cv.loading ? 'Loading elevation data for the coverage map…'
+        : `Two-way ${esc(D.MODES[S.mode].label)} with a station set up like ${esc(cv.ref.st.name)}${cv.real ? '' : ' (smooth earth)'}: <span><i style="background:var(--good)"></i>Good</span><span><i style="background:var(--fair)"></i>Fair</span><span><i style="background:var(--poor)"></i>Marginal</span>`;
       globe.update({
-        cond: last.cond, span,
+        coverage: cv && !cv.loading ? { ...cv, colors: { good: col('--good'), fair: col('--fair'), poor: col('--poor') } } : null,
+        cond: last.cond, span: cv && !cv.loading ? Math.max(cv.R, span) : span,
         horizonKm: last.vu ? Math.sqrt(2 * P.AE * hc.hAnt / 1000) + Math.sqrt(2 * P.AE * 9.1 / 1000) : 0,
         home: { ...S.home, color: colorOf(S.home) },
         links: last.res.map(r => ({ st: r.st, color: r.color, link: r.out, rel: r.out.ok ? r.out.rel[S.mode] : 0, selected: r.st.id === focusId(), text: r.out.ok ? r.out.s : '' }))
@@ -387,13 +446,16 @@
     if (!r || !r.out.ok || !r.back.ok) { $('#dayChartSub').textContent = 'Pick a station whose radio is on this band.'; $('#dayChart').innerHTML = ''; return; }
     const hc = last.ch.home, rc = last.ch[r.st.id];
     const maxMi = Math.max(10, r.out.km * KM_MI * 1.8, r.out.dLos * KM_MI * 1.6);
-    const ptsOut = [], ptsBack = [];
-    for (let k = 1; k <= 80; k++) {
-      const m = maxMi * k / 80, km = m / KM_MI;
-      ptsOut.push({ x: m, v: P.losBudget(S.home, r.st, hc, rc, km, r.out.brg, r.out.back, last.cond).snr });
-      ptsBack.push({ x: m, v: P.losBudget(r.st, S.home, rc, hc, km, r.out.back, r.out.brg, last.cond).snr });
+    const ptsOut = [], ptsBack = [], NS = 160;
+    const along = realTerrain() ? profileAlong(S.home.loc, r.out.brg, maxMi / KM_MI, NS) : null;
+    for (let k = 2; k <= NS; k++) {
+      const m = maxMi * k / NS, km = m / KM_MI, sp = along ? sub(along, k) : null;
+      ptsOut.push({ x: m, v: P.losBudget(S.home, r.st, hc, rc, km, r.out.brg, r.out.back, last.cond, sp).snr });
+      ptsBack.push({ x: m, v: P.losBudget(r.st, S.home, rc, hc, km, r.out.back, r.out.brg, last.cond, sp && P.reverseProfile(sp)).snr });
     }
-    $('#dayChartSub').textContent = `${S.home.name} and ${r.st.name}'s setups, moved apart along the same bearing over ${D.TERRAIN[S.terrain].label.toLowerCase()} terrain. Hover for values.`;
+    $('#dayChartSub').textContent = along
+      ? `${r.st.name}'s setup moved out from you along the ${r.out.brg.toFixed(0)}° bearing, over the real terrain in that direction. Hover for values.`
+      : `${S.home.name} and ${r.st.name}'s setups, moved apart along the same bearing over a ${D.TERRAIN[S.terrain === 'real' ? 'flat' : S.terrain].label.toLowerCase()}. Hover for values.`;
     HS.plots.distChart($('#dayChart'), [
       { name: `You → ${r.st.name}`, color: colorOf(S.home), values: ptsOut },
       { name: `${r.st.name} → you`, color: r.color, values: ptsBack, dash: true }
@@ -402,12 +464,84 @@
 
   function renderCaveats() {
     const notes = last.vu
-      ? ['VHF/UHF uses a smooth-earth model, because real terrain elevation data isn’t loaded yet. Hills between stations are covered by the Terrain setting and each station’s ground elevation. Repeaters, ducting and sporadic-E are not modeled yet.']
+      ? [S.terrain === 'real'
+          ? (terrainDown() ? 'Elevation data could not be loaded here, so paths use a smooth earth with each station’s typed-in ground elevation.' : 'Elevation data is about 235 m (770 ft) per sample: it sees hills and ridges, but not buildings or individual trees.')
+          : 'Smooth-earth mode: hills between stations come from the Terrain setting and each station’s ground elevation.',
+        'Repeaters, ducting and sporadic-E are not modeled yet.']
       : ['Ground wave is not modeled yet, so short contacts (under about 50 miles) read low.',
         'End-fed half-waves read a higher SWR here than most real ones, because the model has no transformer or coax losses at the feed to soften the impedance peak.'];
     notes.push('Commercial antennas are represented by the generic design they are built on.');
     $('#caveats').textContent = notes.join(' ');
   }
+
+  /* ---------- terrain profile panel ---------- */
+  function renderProfile() {
+    const panel = $('#profilePanel');
+    panel.hidden = !last.vu;
+    if (!last.vu) return;
+    const r = last.res.find(x => x.st.id === focusId()) || last.res[0];
+    if (!r) { panel.hidden = true; return; }
+    $('#profTitle').textContent = `Path profile: ${S.home.name} to ${r.st.name}`;
+    if (!r.prof || !r.out.ok || !r.out.terr) {
+      $('#profPlot').innerHTML = '';
+      $('#profSub').textContent = S.terrain !== 'real' ? 'Switch Terrain to “Real elevation data” to see the ground between you.'
+        : terrainDown() ? 'Elevation data could not be loaded, so there is no profile to show.' : 'Loading elevation data…';
+      return;
+    }
+    const t = r.out.terr, hc = last.ch.home, rc = last.ch[r.st.id];
+    const info = HS.plots.profileChart($('#profPlot'), { prof: r.prof, hts: t.hts, hrs: t.hrs, fMHz: hc.band.f, from: S.home.name, to: r.st.name, colorFrom: colorOf(S.home), colorTo: r.color });
+    const at = (info.worstAt * KM_MI).toFixed(1);
+    $('#profSub').textContent = t.clear
+      ? (info.worstClearance >= 0.6
+        ? `Clear line of sight: the ground stays out of the first Fresnel zone (the shaded band) all the way. Antennas at ${Math.round(hc.hAnt / FT)} ft and ${Math.round(rc.hAnt / FT)} ft above ground.`
+        : `Line of sight, but the ground reaches into the Fresnel zone ${at} mi from you, costing about ${t.terrainLoss.toFixed(0)} dB. A taller antenna would clear it.`)
+      : (t.terrainLoss >= 1
+        ? `The direct path is blocked. The worst obstruction is ${at} mi from you, and these hills cost about ${t.terrainLoss.toFixed(0)} dB more than a smooth earth would. Red marks show ground inside the Fresnel zone.`
+        : `The direct path is blocked, mostly by the curve of the earth: these hills cost little more than a smooth earth would. Red marks show ground inside the Fresnel zone.`);
+  }
+
+  /* ---------- coverage map (VHF/UHF, real terrain) ---------- */
+  const covCache = new Map();
+  function coverage() {
+    const r = last.res.find(x => x.st.id === focusId()) || last.res[0];
+    if (!r || !r.out.ok) return null;
+    const hc = last.ch.home, rc = last.ch[r.st.id], cond = last.cond;
+    const horizon = Math.sqrt(2 * P.AE * hc.hAnt / 1000) + Math.sqrt(2 * P.AE * rc.hAnt / 1000);
+    const far = Math.max(...last.res.map(x => x.out.km));
+    const R = Math.min(160, Math.max(20, 1.3 * far, 2.5 * horizon));
+    const NR = 90, NSt = 60;
+    const key = JSON.stringify([S.home.grid, S.home.vu, S.home.radio, S.home.noise, r.st.vu, r.st.radio, r.st.noise, S.band, S.mode, S.terrain, R]);
+    if (covCache.has(key)) return covCache.get(key);
+    const real = realTerrain() && !terrainDown();
+    let grid = null;
+    if (real) {
+      const pts = [];
+      for (let i = 0; i < NR; i++) for (let k = 0; k <= NSt; k += 4) pts.push(TR.dest(S.home.loc, i * 360 / NR, R * k / NSt));
+      if (!want(pts)) return { loading: true, ref: r };
+      grid = [];
+      for (let i = 0; i < NR; i++) { const pr = profileAlong(S.home.loc, i * 360 / NR, R, NSt); if (!pr) return { loading: true, ref: r }; grid.push(pr); }
+    }
+    const req = D.MODES[S.mode].snr, rel = new Float32Array(NR * NSt);
+    for (let i = 0; i < NR; i++) {
+      const brg = i * 360 / NR, back = (brg + 180) % 360;
+      for (let k = 1; k <= NSt; k++) {
+        const km = R * k / NSt, sp = grid && k >= 2 ? sub(grid[i], k) : null;
+        const o = P.losBudget(S.home, r.st, hc, rc, km, brg, back, cond, sp);
+        const b = P.losBudget(r.st, S.home, rc, hc, km, back, brg, cond, sp && P.reverseProfile(sp));
+        rel[i * NSt + k - 1] = normCdf((Math.min(o.snr, b.snr) - req) / o.sigma);
+      }
+    }
+    const out = { center: S.home.loc, R, radials: NR, steps: NSt, rel, ref: r, real };
+    covCache.set(key, out);
+    return out;
+  }
+  $('#covBtn').addEventListener('click', () => {
+    S.coverage = !S.coverage;
+    $('#covBtn').setAttribute('aria-pressed', S.coverage);
+    $('#covBtn').textContent = S.coverage ? 'Hide coverage' : 'Show coverage';
+    if (S.coverage) { $('#busy').textContent = 'Working out coverage…'; $('#busy').hidden = false; }
+    compute(true);
+  });
 
   /* ---------- compare ---------- */
   $('#pinA').addEventListener('click', () => { S.pinA = { band: S.band, home: JSON.parse(JSON.stringify({ ...S.home, loc: undefined })) }; compute(); });
@@ -420,11 +554,14 @@
   });
 
   /* ---------- views ---------- */
-  document.querySelectorAll('.vt').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.vt[data-view]').forEach(b => b.addEventListener('click', () => {
     view = b.dataset.view;
-    document.querySelectorAll('.vt').forEach(x => { x.classList.toggle('active', x === b); x.setAttribute('aria-selected', x === b); });
+    document.querySelectorAll('.vt[data-view]').forEach(x => { x.classList.toggle('active', x === b); x.setAttribute('aria-selected', x === b); });
     $('#view-antenna').hidden = view !== 'antenna'; $('#view-map').hidden = view !== 'map';
     $('#gainLegend').hidden = view !== 'antenna';
+    $('#covBtn').hidden = !(view === 'map' && grp() === 'vu');
+    $('#covLegend').hidden = true;
+    if (view === 'map' && S.coverage) compute(true);
     $('#viewHint').textContent = view === 'antenna' ? 'Drag to orbit · scroll to zoom' : (grp() === 'vu' ? 'Drag to spin · scroll to zoom · dashed ring: your radio horizon' : 'Drag to spin · ionosphere height shown 3× · day/night from the hour');
     (view === 'antenna' ? view3d : globe)?.resize();
   }));

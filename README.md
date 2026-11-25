@@ -10,7 +10,7 @@ Open `index.html` in Chrome or Edge, or serve the folder:
 python -m http.server 8765
 ```
 
-Everything it needs (Three.js, coastlines and US state borders included) ships in this folder, so it also works offline. The only outside request is Google Fonts, and the page falls back to system fonts without it.
+Everything it needs (Three.js, coastlines and US state borders included) ships in this folder. Outside requests: elevation tiles from `s3.amazonaws.com` (2 m / 70 cm only) and Google Fonts. Without them it falls back to a smooth earth and system fonts.
 
 ## What it models
 
@@ -19,7 +19,8 @@ Everything it needs (Three.js, coastlines and US state borders included) ships i
   VHF/UHF types: J-pole, stacked collinear (X50/X200 style, several in-phase feeds), elevated ground plane, mobile whip on a car roof, handheld rubber duck, dipole, Yagi (horizontal or vertical). VHF/UHF antennas are solved in free space, since the line-of-sight model brings in the ground.
 - **Stations** have one radio and two antenna systems (HF and VHF/UHF), each with its own feedline, matching and power.
 - **Feedline and matching** (`js/data.js`, `js/prop.js`): datasheet-fit coax loss for RG, LMR and Heliax lines plus 450 Ω window line, extra loss from SWR, balun/unun loss, built-in or external tuner.
-- **VHF/UHF line of sight** (`js/prop.js`): smooth earth with a 4/3 effective radius. Two-ray (plane-earth) loss inside the radio horizon, ITU-R P.526 spherical-earth diffraction beyond it, a rough troposcatter floor for long paths, a terrain-roughness setting, local clutter from each station's surroundings (trees, buildings) against antenna height, each station's ground elevation, and polarization mismatch from the solved patterns.
+- **Real terrain** (`js/terrain.js`): ground elevation from the free Terrarium tiles on AWS Open Data (Tilezen/Mapzen, built from SRTM, USGS NED, GMTED and others; about 235 m per sample at zoom 9). Tiles load in the browser as needed and are cached; no API key. If they can't load, the app falls back to a smooth earth. A folder `terrain/{z}/{x}/{y}.png` next to the page is used as a local fallback.
+- **VHF/UHF line of sight** (`js/prop.js`): with terrain, the ITU-R P.526 delta-Bullington method (diffraction over the real profile plus the smooth-earth term for ground reflection and curvature). Without it, a smooth earth with a 4/3 effective radius. Two-ray (plane-earth) loss inside the radio horizon, ITU-R P.526 spherical-earth diffraction beyond it, a rough troposcatter floor for long paths, a terrain-roughness setting, local clutter from each station's surroundings (trees, buildings) against antenna height, each station's ground elevation, and polarization mismatch from the solved patterns.
 - **HF propagation** (`js/prop.js`): simplified sky-wave model with F2 hops, a MUF that follows the sun at each reflection point and the solar activity setting, D-layer absorption, ITU-R P.372 man-made noise at each end, and reliability from day-to-day MUF and fading spread.
 
 ## Tests
@@ -34,4 +35,4 @@ node tests/los.test.js     # line-of-sight path loss and example VHF stations
 
 ## Next up
 
-80 m, 33 cm (Meshtastic), real terrain profiles from elevation data, repeaters, ground wave for short paths, VOACAP-grade propagation, shareable setup links.
+80 m, 33 cm (Meshtastic), repeaters, higher-resolution terrain for short paths, ground wave for short paths, VOACAP-grade propagation, shareable setup links.

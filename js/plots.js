@@ -160,5 +160,77 @@
     container.appendChild(lg);
   }
 
-  HS.plots = { elevation, dayChart, distChart };
+  /* Terrain profile between two antennas, drawn on a 4/3-earth: terrain plus earth bulge, the direct ray,
+   * the first Fresnel zone, and ground that intrudes into 60% of it.
+   * o: {prof:{d km,h m}, hts, hrs (m amsl), fMHz, from, to, colorFrom, colorTo} */
+  function profileChart(container, o) {
+    container.innerHTML = '';
+    const W = 900, H = 260, L = 52, Rm = 14, Tm = 22, B = 30;
+    const FT = 0.3048, KM_MI = 0.621371, AE = HS.prop.AE;
+    const d = o.prof.d, D = d[d.length - 1], lam = 299.792458 / o.fMHz;
+    const bulge = x => x * (D - x) / (2 * AE) * 1000;
+    const ground = d.map((x, i) => o.prof.h[i] + bulge(x));
+    const ray = x => o.hts + (o.hrs - o.hts) * x / D;
+    const f1 = x => (x <= 0 || x >= D) ? 0 : Math.sqrt(lam * x * 1000 * (D - x) * 1000 / (D * 1000));
+    const fmax = Math.max(...d.map(f1)), mid = ray(D / 2);
+    const lo = Math.min(Math.min(...ground), mid - fmax) - 10, hi = Math.max(Math.max(...ground), o.hts, o.hrs, mid + fmax) + 10;
+    const X = x => L + (W - L - Rm) * x / D, Y = m => Tm + (H - Tm - B) * (1 - (m - lo) / (hi - lo));
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `Terrain profile from ${o.from} to ${o.to}` }, container);
+    const cid = 'pc' + Math.random().toString(36).slice(2);
+    el('rect', { x: L, y: Tm, width: W - L - Rm, height: H - Tm - B }, el('clipPath', { id: cid }, el('defs', {}, svg)));
+    const plot = el('g', { 'clip-path': `url(#${cid})` });
+    // grid
+    const span = (hi - lo) / FT, stepFt = [10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000].find(s => span / s <= 6) || 5000;
+    for (let f = Math.ceil(lo / FT / stepFt) * stepFt; f * FT <= hi; f += stepFt) {
+      el('line', { x1: L, x2: W - Rm, y1: Y(f * FT), y2: Y(f * FT), class: 'grid' }, svg);
+      txt(svg, L - 6, Y(f * FT) + 4, f.toLocaleString() + '', 'end');
+    }
+    txt(svg, L - 6, Tm - 8, 'ft', 'end', { 'font-size': 10 });
+    const Dmi = D * KM_MI, stepMi = [0.5, 1, 2, 5, 10, 20, 25, 50, 100].find(s => Dmi / s <= 10) || 200;
+    for (let m = 0; m <= Dmi + 1e-9; m += stepMi) txt(svg, X(m / KM_MI), H - 10, (Math.round(m * 10) / 10) + '');
+    txt(svg, W - Rm, H - 22, 'mi', 'end', { 'font-size': 10 });
+    // Fresnel zone
+    let fz = '', fzb = '';
+    d.forEach((x, i) => { fz += (i ? 'L' : 'M') + X(x).toFixed(1) + ' ' + Y(ray(x) + f1(x)).toFixed(1); });
+    for (let i = d.length - 1; i >= 0; i--) fzb += 'L' + X(d[i]).toFixed(1) + ' ' + Y(ray(d[i]) - f1(d[i])).toFixed(1);
+    svg.appendChild(plot);
+    el('path', { d: fz + fzb + 'Z', class: 'fresnel' }, plot);
+    // terrain
+    let tp = `M ${X(0)} ${Y(lo)}`;
+    d.forEach((x, i) => { tp += `L${X(x).toFixed(1)} ${Y(ground[i]).toFixed(1)}`; });
+    tp += `L ${X(D)} ${Y(lo)} Z`;
+    el('path', { d: tp, class: 'terrain' }, plot);
+    // obstructions: ground inside 60% of the first Fresnel zone
+    let worst = { c: Infinity, i: -1 };
+    let seg = '';
+    d.forEach((x, i) => {
+      if (i === 0 || i === d.length - 1) return;
+      const clear = (ray(x) - ground[i]) / Math.max(0.01, f1(x));
+      if (clear < worst.c) worst = { c: clear, i };
+      if (clear < 0.6) seg += `M${X(x).toFixed(1)} ${Y(ground[i]).toFixed(1)}l0.01 0`;
+    });
+    if (seg) el('path', { d: seg, class: 'block' }, plot);
+    // masts and ray
+    el('line', { x1: X(0), x2: X(0), y1: Y(ground[0]), y2: Y(o.hts), class: 'mast' }, svg);
+    el('line', { x1: X(D), x2: X(D), y1: Y(ground[ground.length - 1]), y2: Y(o.hrs), class: 'mast' }, svg);
+    el('line', { x1: X(0), y1: Y(o.hts), x2: X(D), y2: Y(o.hrs), class: 'ray' }, svg);
+    el('circle', { cx: X(0), cy: Y(o.hts), r: 5, fill: o.colorFrom, stroke: 'var(--panel)', 'stroke-width': 2 }, svg);
+    el('circle', { cx: X(D), cy: Y(o.hrs), r: 5, fill: o.colorTo, stroke: 'var(--panel)', 'stroke-width': 2 }, svg);
+    txt(svg, X(0) + 8, Y(o.hts) - 8, o.from, 'start', { 'font-size': 11 });
+    txt(svg, X(D) - 8, Y(o.hrs) - 8, o.to, 'end', { 'font-size': 11 });
+    // hover
+    const cross = el('line', { y1: Tm, y2: H - B, stroke: 'var(--ink-3)', visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: L, y: Tm, width: W - L - Rm, height: H - Tm - B, fill: 'transparent' }, svg);
+    hit.addEventListener('mousemove', e => {
+      const b = svg.getBoundingClientRect(), xv = ((e.clientX - b.left) * W / b.width - L) / (W - L - Rm) * D;
+      let i = 0; while (i < d.length - 1 && d[i] < xv) i++;
+      cross.setAttribute('x1', X(d[i])); cross.setAttribute('x2', X(d[i])); cross.setAttribute('visibility', 'visible');
+      const cl = ray(d[i]) - ground[i], f = f1(d[i]);
+      showTip(e, `<b>${(d[i] * KM_MI).toFixed(1)} mi</b><br>Ground ${Math.round(o.prof.h[i] / FT).toLocaleString()} ft<br>Earth bulge ${Math.round(bulge(d[i]) / FT)} ft<br>Clearance ${Math.round(cl / FT)} ft${f > 0 ? ` (${Math.round(cl / f * 100)}% of Fresnel zone)` : ''}`);
+    });
+    hit.addEventListener('mouseleave', () => { cross.setAttribute('visibility', 'hidden'); hideTip(); });
+    return { worstClearance: worst.c, worstAt: worst.i >= 0 ? d[worst.i] : 0 };
+  }
+
+  HS.plots = { elevation, dayChart, distChart, profileChart };
 })(typeof window !== 'undefined' ? window : globalThis);

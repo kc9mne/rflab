@@ -194,9 +194,9 @@
     const G = h => { const B = Yk * h; const g = B > 2 ? 17.6 * Math.sqrt(B - 1.1) - 5 * Math.log10(B - 1.1) - 8 : 20 * Math.log10(B + 0.1 * B * B * B); return Math.max(g, -38); };
     return -(F + G(h1) + G(h2)); // dB below free space
   }
-  function losCore(dKm, fMHz, h1, h2, cond) {
-    const D = HS.data;
-    const dk = Math.max(dKm, 0.05), dm = dk * 1000;
+  // smooth-earth excess loss over free space for effective antenna heights h1, h2 (m)
+  function smoothExcess(dk, fMHz, h1, h2) {
+    const dm = dk * 1000;
     const fspl = 32.45 + 20 * Math.log10(fMHz) + 20 * Math.log10(dk);
     const dLos = Math.sqrt(2 * AE * h1 / 1000) + Math.sqrt(2 * AE * h2 / 1000);
     const aPe = Math.max(0, 40 * Math.log10(dm) - 20 * Math.log10(h1 * h2) - fspl);
@@ -205,15 +205,84 @@
     if (dk <= 0.8 * dLos) a = aPe;
     else if (dk >= 1.2 * dLos) a = aDf;
     else { const t = (dk - 0.8 * dLos) / (0.4 * dLos); a = aPe * (1 - t) + aDf * t; }
+    return { a, dLos, fspl };
+  }
+  const J = nu => nu > -0.78 ? 6.9 + 20 * Math.log10(Math.sqrt((nu - 0.1) ** 2 + 1) + nu - 0.1) : 0;
+  /* ITU-R P.526 Bullington diffraction over a profile (d km, h m above sea level),
+   * terminals hts/hrs m above sea level, wavelength lam m. */
+  function bullington(d, h, hts, hrs, lam) {
+    const N = d.length, D = d[N - 1], Ce = 1 / AE;
+    let Stim = -Infinity, iTim = -1;
+    for (let i = 1; i < N - 1; i++) {
+      const s = (h[i] + 500 * Ce * d[i] * (D - d[i]) - hts) / d[i];
+      if (s > Stim) { Stim = s; iTim = i; }
+    }
+    const Str = (hrs - hts) / D;
+    let nu, idx = iTim, clear;
+    if (N < 3) { return { L: 0, nu: -9, idx: -1, clear: true, Stim: Str }; }
+    if (Stim < Str) {
+      clear = true; nu = -Infinity;
+      for (let i = 1; i < N - 1; i++) {
+        const v = (h[i] + 500 * Ce * d[i] * (D - d[i]) - (hts * (D - d[i]) + hrs * d[i]) / D) * Math.sqrt(0.002 * D / (lam * d[i] * (D - d[i])));
+        if (v > nu) { nu = v; idx = i; }
+      }
+    } else {
+      clear = false;
+      let Srim = -Infinity;
+      for (let i = 1; i < N - 1; i++) Srim = Math.max(Srim, (h[i] + 500 * Ce * d[i] * (D - d[i]) - hrs) / (D - d[i]));
+      const dbp = (hrs - hts + Srim * D) / (Stim + Srim);
+      nu = (hts + Stim * dbp - (hts * (D - dbp) + hrs * dbp) / D) * Math.sqrt(0.002 * D / (lam * dbp * (D - dbp)));
+    }
+    const Luc = J(nu);
+    return { L: Luc + (1 - Math.exp(-Luc / 6)) * (10 + 0.02 * D), nu, idx, clear, Stim };
+  }
+  // least-squares smooth earth through a profile: surface height (m) at each end
+  function smoothFit(d, h) {
+    let v1 = 0, v2 = 0; const D = d[d.length - 1];
+    for (let i = 1; i < d.length; i++) {
+      const dd = d[i] - d[i - 1];
+      v1 += dd * (h[i] + h[i - 1]);
+      v2 += dd * (h[i] * (2 * d[i] + d[i - 1]) + h[i - 1] * (d[i] + 2 * d[i - 1]));
+    }
+    return { hst: (2 * v1 * D - v2) / (D * D), hsr: (v2 - v1 * D) / (D * D) };
+  }
+  const reverseProfile = p => ({ d: p.d.map(x => p.km - x).reverse(), h: p.h.slice().reverse(), km: p.km });
+
+  /* Path loss between antennas h1, h2 (m). Without a profile, h1/h2 are heights above the lower site and the
+   * ground is a smooth earth (plus the statistical Terrain setting). With a profile {d,h}, h1/h2 are heights
+   * above local ground and the delta-Bullington method of ITU-R P.526 adds the real terrain. */
+  function losCore(dKm, fMHz, h1, h2, cond, prof) {
+    const D = HS.data;
+    const dk = Math.max(dKm, 0.05);
+    let a, dLos, he1 = h1, he2 = h2, terr = null;
+    const fspl = 32.45 + 20 * Math.log10(fMHz) + 20 * Math.log10(dk);
+    if (prof && prof.d.length >= 3) {
+      const n = prof.d.length, lam = 299.792458 / fMHz;
+      const hts = prof.h[0] + h1, hrs = prof.h[n - 1] + h2;
+      const fit = smoothFit(prof.d, prof.h);
+      he1 = Math.max(h1, hts - fit.hst); he2 = Math.max(h2, hrs - fit.hsr);
+      const zero = prof.d.map(() => 0);
+      const Lb = bullington(prof.d, prof.h, hts, hrs, lam);
+      const Ls = bullington(prof.d, zero, he1, he2, lam);
+      const sm = smoothExcess(dk, fMHz, he1, he2);
+      a = Lb.L + Math.max(0, sm.a - Ls.L);
+      dLos = sm.dLos;
+      terr = { ...Lb, hts, hrs, he1, he2, terrainLoss: Math.max(0, a - smoothExcess(dk, fMHz, h1, h2).a) };
+    } else {
+      const sm = smoothExcess(dk, fMHz, h1, h2);
+      a = sm.a; dLos = sm.dLos;
+    }
     const lDiff = fspl + a;
     // troposcatter floor: starts no stronger than the ground-reflection loss at the horizon (low antennas scatter poorly)
     const fsplH = 32.45 + 20 * Math.log10(fMHz) + 20 * Math.log10(dLos);
-    const aH = Math.max(0, 40 * Math.log10(dLos * 1000) - 20 * Math.log10(h1 * h2) - fsplH);
-    const lSc = dk > dLos ? fspl + Math.max(40, aH + 6) + 0.08 * (dk - dLos) + 10 * Math.log10(fMHz / 144) : Infinity;
+    const aH = Math.max(0, 40 * Math.log10(dLos * 1000) - 20 * Math.log10(he1 * he2) - fsplH);
+    // terrain near either end raises the scatter angle too, so the scatter path pays part of the hill loss
+    const hillScatter = terr ? 0.5 * Math.max(0, a - smoothExcess(dk, fMHz, h1, h2).a) : 0;
+    const lSc = dk > dLos ? fspl + Math.max(40, aH + 6) + 0.08 * (dk - dLos) + 10 * Math.log10(fMHz / 144) + hillScatter : Infinity;
     const lBase = -10 * Math.log10(Math.pow(10, -lDiff / 10) + Math.pow(10, -lSc / 10));
     const T = D.TERRAIN[cond.terrain] || D.TERRAIN.flat;
-    const terrain = T.loss * (1 - Math.exp(-dk / 30));
-    return { fspl, dLos, a, lDiff, lSc, lBase, terrain, sigma: T.sigma, scatter: lSc < lDiff };
+    const terrain = terr ? 0 : T.loss * (1 - Math.exp(-dk / 30));
+    return { fspl, dLos, a, lDiff, lSc, lBase, terrain, sigma: terr ? 6 : T.sigma, scatter: lSc < lDiff && dk > 80, terr };
   }
   function clutterLoss(st, c) {
     const hc = HS.data.CLUTTER[st.noise] ?? 6;
@@ -221,31 +290,49 @@
     return Math.min(20, 4 + (hc - c.hAnt)) * (c.band.f > 300 ? 1.2 : 1);
   }
   // signal for a VHF/UHF path at distance dKm (lets the chart sweep distance with the same stations)
-  function losBudget(tx, rx, txC, rxC, dKm, brg, back, cond) {
+  function losBudget(tx, rx, txC, rxC, dKm, brg, back, cond, prof) {
     const FT = 0.3048;
-    const e1 = (tx.elevFt ?? 650) * FT, e2 = (rx.elevFt ?? 650) * FT, base = Math.min(e1, e2);
-    const h1 = txC.hAnt + e1 - base, h2 = rxC.hAnt + e2 - base;
-    const L = losCore(dKm, txC.band.f, h1, h2, cond);
+    let h1, h2, L;
     const dm = Math.max(dKm, 0.05) * 1000, aeM = AE * 1000;
-    const elT = Math.max(-5, (Math.atan((h2 - h1) / dm) - dm / (2 * aeM)) * 180 / Math.PI);
-    const elR = Math.max(-5, (Math.atan((h1 - h2) / dm) - dm / (2 * aeM)) * 180 / Math.PI);
+    let elT, elR;
+    if (prof) {
+      h1 = txC.hAnt; h2 = rxC.hAnt;
+      L = losCore(dKm, txC.band.f, h1, h2, cond, prof);
+      const t = L.terr;
+      if (t.clear) {
+        elT = (Math.atan((t.hrs - t.hts) / dm) - dm / (2 * aeM)) * 180 / Math.PI;
+        elR = (Math.atan((t.hts - t.hrs) / dm) - dm / (2 * aeM)) * 180 / Math.PI;
+      } else {
+        // aim at the terrain edge that blocks the path
+        elT = Math.atan(t.Stim / 1000) * 180 / Math.PI;
+        const rp = reverseProfile(prof), r = bullington(rp.d, rp.h, t.hrs, t.hts, 299.792458 / txC.band.f);
+        elR = Math.atan(r.Stim / 1000) * 180 / Math.PI;
+      }
+    } else {
+      const e1 = (tx.elevFt ?? 650) * FT, e2 = (rx.elevFt ?? 650) * FT, base = Math.min(e1, e2);
+      h1 = txC.hAnt + e1 - base; h2 = rxC.hAnt + e2 - base;
+      L = losCore(dKm, txC.band.f, h1, h2, cond);
+      elT = (Math.atan((h2 - h1) / dm) - dm / (2 * aeM)) * 180 / Math.PI;
+      elR = (Math.atan((h1 - h2) / dm) - dm / (2 * aeM)) * 180 / Math.PI;
+    }
+    elT = Math.max(-10, Math.min(30, elT)); elR = Math.max(-10, Math.min(30, elR));
     const gt = HS.nec.lookup(txC.ana.pat, brg, elT), gr = HS.nec.lookup(rxC.ana.pat, back, elR);
     const vt = HS.nec.vertFrac(txC.ana.pat, brg, elT), vr = HS.nec.vertFrac(rxC.ana.pat, back, elR);
     const polLoss = -10 * Math.log10(Math.max(0.01, vt * vr + (1 - vt) * (1 - vr)));
     const clutter = clutterLoss(tx, txC) + clutterLoss(rx, rxC);
     const loss = L.lBase + L.terrain + clutter + polLoss;
     const sig = txC.perpDbm + gt - loss + gr - rxC.totalLoss;
-    return { ...L, h1, h2, el: elT, gt, gr, polLoss, clutter, loss, sig, snr: sig - rxC.noiseDbm, los: dKm <= L.dLos };
+    const los = L.terr ? L.terr.clear : dKm <= L.dLos;
+    return { ...L, h1, h2, el: elT, gt, gr, polLoss, clutter, loss, sig, snr: sig - rxC.noiseDbm, los };
   }
 
-  /* one direction: tx station -> rx station */
   function link(tx, rx, ctx, cond, txC, rxC) {
     const f = txC.band.f;
     if (txC.band.group === 'vu') {
       const db = distBearing(tx.loc, rx.loc), back = distBearing(rx.loc, tx.loc).brg;
       if (!txC.watts) return { km: db.km, brg: db.brg, back, ok: false, reason: 'Radio cannot transmit on this band', rel: {} };
       if (!rxC.radio.power[txC.band.id]) return { km: db.km, brg: db.brg, back, ok: false, reason: 'Their radio is not on this band', rel: {} };
-      const b = losBudget(tx, rx, txC, rxC, db.km, db.brg, back, cond);
+      const b = losBudget(tx, rx, txC, rxC, db.km, db.brg, back, cond, ctx && ctx.prof);
       const rel = {};
       Object.entries(HS.data.MODES).forEach(([k, md]) => { rel[k] = normCdf((b.snr - md.snr) / b.sigma); });
       return { km: db.km, brg: db.brg, back, ok: true, vu: true, hops: 0, h: 0, ...b, s: sMeter(b.sig, true), rel };
@@ -269,5 +356,5 @@
     return { km: db.km, brg: db.brg, back, ok: true, ...best, s: sMeter(best.sig), rel };
   }
 
-  HS.prop = { gridToLatLon, latLonToGrid, distBearing, gcPoint, skyModes, chain, link, sMeter, layer, swrOf, losCore, losBudget, AE };
+  HS.prop = { gridToLatLon, latLonToGrid, distBearing, gcPoint, skyModes, chain, link, sMeter, layer, swrOf, losCore, losBudget, bullington, smoothFit, reverseProfile, AE };
 })(typeof window !== 'undefined' ? window : globalThis);
