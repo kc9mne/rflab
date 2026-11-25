@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SkyHop</title>
+<meta name="description" content="Build ham radio stations, see their antenna patterns in 3D and predict HF coverage to other stations.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">SkyHop</span>
+    <span class="brand-sub">station &amp; propagation simulator</span>
+  </div>
+  <div class="conditions" role="group" aria-label="Band and conditions">
+    <div class="seg" id="bandSeg" role="radiogroup" aria-label="Band"></div>
+    <label class="cond">
+      <span class="cond-label">UTC</span>
+      <input type="range" id="hour" min="0" max="23" step="1" value="17" aria-label="Hour (UTC)">
+      <output id="hourOut" class="mono">17:00Z</output>
+    </label>
+    <label class="cond"><span class="cond-label">Month</span>
+      <select id="month"></select></label>
+    <label class="cond"><span class="cond-label">Sun</span>
+      <select id="solar"></select></label>
+    <label class="cond"><span class="cond-label">Mode</span>
+      <select id="mode"></select></label>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="builder" aria-label="Station builder">
+    <div class="station-tabs" id="stationTabs" role="tablist"></div>
+    <form id="stationForm" class="station-form" autocomplete="off"></form>
+    <section class="system" id="system" aria-live="polite"></section>
+  </aside>
+
+  <section class="stage">
+    <div class="viewport">
+      <div class="view-tabs" role="tablist">
+        <button type="button" role="tab" class="vt active" data-view="antenna" aria-selected="true">Antenna pattern</button>
+        <button type="button" role="tab" class="vt" data-view="map" aria-selected="false">Coverage map</button>
+        <span class="view-hint" id="viewHint">Drag to orbit · scroll to zoom</span>
+        <span class="busy" id="busy" hidden>Solving antenna…</span>
+      </div>
+      <div class="canvas-wrap" id="canvasWrap">
+        <div id="view-antenna" class="view"></div>
+        <div id="view-map" class="view" hidden></div>
+        <div class="legend-gain" id="gainLegend"></div>
+      </div>
+    </div>
+
+    <div class="results-head">
+      <h2>Who can you work?</h2>
+      <div class="compare">
+        <button type="button" id="pinA" class="btn">Save my setup as A</button>
+        <button type="button" id="restoreA" class="btn ghost" hidden>Go back to A</button>
+        <button type="button" id="clearA" class="btn ghost" hidden>Clear A</button>
+      </div>
+    </div>
+    <div class="cards" id="cards"></div>
+
+    <div class="panels">
+      <section class="panel">
+        <h3 id="elevTitle">Elevation pattern</h3>
+        <p class="panel-sub" id="elevSub"></p>
+        <div id="elevPlot" class="plot"></div>
+      </section>
+      <section class="panel">
+        <h3>Signal-to-noise through the day</h3>
+        <p class="panel-sub" id="dayChartSub"></p>
+        <div id="dayChart" class="plot"></div>
+      </section>
+    </div>
+
+    <footer class="notes">
+      <p><strong>How it works.</strong> Each antenna is solved as real wires over real ground with a method-of-moments solver (the same idea as NEC), trimmed to resonance the way you would trim it in the yard. Feedline loss comes from datasheet curves, including the extra loss SWR causes. Propagation is a simplified sky-wave model: F2-layer hops, MUF from the sun's position and solar activity, D-layer absorption, and man-made noise at each end. Use it to compare setups. Conditions on the day will vary.</p>
+      <p id="caveats"></p>
+    </footer>
+  </section>
+</main>
+
+<div class="tooltip" id="tooltip" hidden></div>
+
+<script src="js/vendor/three.min.js"></script>
+<script src="js/vendor/OrbitControls.js"></script>
+<script src="js/land.js"></script>
+<script src="js/nec.js"></script>
+<script src="js/data.js"></script>
+<script src="js/antennas.js"></script>
+<script src="js/prop.js"></script>
+<script src="js/view3d.js"></script>
+<script src="js/globe.js"></script>
+<script src="js/plots.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
